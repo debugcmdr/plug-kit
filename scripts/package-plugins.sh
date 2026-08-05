@@ -14,8 +14,10 @@ VERSION="${TAG#v}"
 [ -z "$VERSION" ] && VERSION="0.1.0"
 REPO="debugcmdr/plug-kit"
 
-mkdir -p dist/plugins
-rm -f dist/plugins/*.zip
+# 打包输出目录:不用 dist/(vite 构建会清空它),用 release/
+OUT_DIR="release/plugins"
+mkdir -p "$OUT_DIR"
+rm -f "$OUT_DIR"/*.zip
 
 for id in download convert audio-extract; do
   echo "=== 打包 $id ==="
@@ -27,13 +29,15 @@ for id in download convert audio-extract; do
   cp -R "plugins/$id/tool/." "$tmpdir/tool/"
   # 确保可执行
   chmod +x "$tmpdir/tool"/plugkit-* 2>/dev/null || true
+  # 固定文件时间戳,保证 zip 确定性(sha256 可复现)
+  find "$tmpdir" -exec touch -t 202401010000 {} +
 
   # 生成 zip(结构:manifest.json + tool/),文件名带版本
-  (cd "$(dirname "$tmpdir")" && zip -r -X "$ROOT/dist/plugins/$id-$VERSION.zip" "$id" >/dev/null)
+  (cd "$(dirname "$tmpdir")" && zip -r -X "$ROOT/$OUT_DIR/$id-$VERSION.zip" "$id" >/dev/null)
 
   # 计算 sha256
-  SHA=$(shasum -a 256 "dist/plugins/$id-$VERSION.zip" | awk '{print $1}')
-  SIZE=$(stat -f%z "dist/plugins/$id-$VERSION.zip")
+  SHA=$(shasum -a 256 "$OUT_DIR/$id-$VERSION.zip" | awk '{print $1}')
+  SIZE=$(stat -f%z "$OUT_DIR/$id-$VERSION.zip")
   echo "  $id-$VERSION.zip: ${SIZE} bytes, sha256=$SHA"
 
   # 更新 fallback 清单里的 sha256/size/binaryUrl
@@ -58,7 +62,7 @@ done
 
 echo ""
 echo "=== 打包完成 ==="
-ls -la dist/plugins/
+ls -la "$OUT_DIR/"
 echo ""
 echo "=== fallback 清单已更新 ==="
 cat src-tauri/assets/fallback-manifests.json

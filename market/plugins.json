@@ -21,7 +21,7 @@
         "linux-x64"
       ],
       "size": 5853,
-      "sha256": "9a4632bd07e1efc61f422ab80d9435f8c7e439ecebd1fcc8572df7ecbfff3e3e",
+      "sha256": "6ae263933d54cda287e5516919d9de6a3814941b364b2944559afe4c3f82cbad",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/download-0.1.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
@@ -45,7 +45,7 @@
         "linux-x64"
       ],
       "size": 4905,
-      "sha256": "91ca9dba762836397365f744d02b24b3722d9acc9b507dd535129a8e2f478bc1",
+      "sha256": "adae626aea57094210db17eb18fb533adb7669c4e2c49ed8a81db7784a944b84",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/convert-0.1.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
@@ -71,7 +71,7 @@
         "linux-x64"
       ],
       "size": 5264,
-      "sha256": "03bb250ac859eca390f9b72ca56fd45b72ad72800441103eb63521a947d45cf7",
+      "sha256": "f1803765618aaf28acec3ce9c576a82eb65d2b1d56ad5c7f72ecc0d7d003ba66",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/audio-extract-0.1.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"

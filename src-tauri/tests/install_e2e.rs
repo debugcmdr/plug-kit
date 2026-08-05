@@ -5,7 +5,7 @@
 fn packaged_zip_has_correct_structure() {
     let manifest_zip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap()
-        .join("dist/plugins/download-0.1.0.zip");
+        .join("release/plugins/download-0.1.0.zip");
 
     let bytes = std::fs::read(&manifest_zip).expect("packaged zip should exist");
     let cursor = std::io::Cursor::new(bytes);

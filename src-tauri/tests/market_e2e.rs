@@ -9,6 +9,13 @@ async fn local_market_install_flow() {
     // Point the market manifest at the local server.
     std::env::set_var("PLUGKIT_MANIFEST_URL", "http://127.0.0.1:18765/market/plugins.json");
 
+    // Skip gracefully if the local test server isn't running (normal cargo test
+    // shouldn't depend on it). The real GitHub flow is covered by market_remote_e2e.
+    if std::net::TcpStream::connect("127.0.0.1:18765").is_err() {
+        eprintln!("SKIP: local test server not running on :18765");
+        return;
+    }
+
     // Fetch the market list (goes through manifest_fetcher::fetch_market_manifests).
     let plugins = api::fetch_market_manifests()
         .await
@@ -21,7 +28,7 @@ async fn local_market_install_flow() {
     // Rewrite binaryUrl to local server (the real one points at GitHub Release).
     // binaryUrl is like .../releases/download/v0.1.0/download-0.1.0.zip
     let filename = download.binary_url.rsplit('/').next().unwrap();
-    let local_url = format!("http://127.0.0.1:18765/dist/plugins/{}", filename);
+    let local_url = format!("http://127.0.0.1:18765/release/plugins/{}", filename);
 
     let bytes = api::download_with_fallback(
         &local_url,

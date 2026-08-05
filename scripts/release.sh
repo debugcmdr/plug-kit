@@ -16,7 +16,7 @@ TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/d
 if [ -z "$TOKEN" ]; then echo "错误:无法从 keychain 获取 GitHub 凭据"; exit 1; fi
 
 # 确认 zip 存在
-for f in dist/plugins/*.zip; do
+for f in release/plugins/*.zip; do
   [ -e "$f" ] || { echo "错误:没有打包好的 zip,先运行 ./scripts/package-plugins.sh $TAG"; exit 1; }
 done
 
@@ -37,7 +37,7 @@ else
 fi
 
 echo "=== 上传插件 zip ==="
-for f in dist/plugins/*.zip; do
+for f in release/plugins/*.zip; do
   NAME="$(basename "$f")"
   echo "  上传 $NAME ..."
   curl -s -X POST -H "Authorization: Bearer $TOKEN" \
