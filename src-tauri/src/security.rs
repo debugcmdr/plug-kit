@@ -18,20 +18,50 @@ pub enum SecurityError {
 }
 
 pub fn validate_unzip_path(base: &Path, entry_path: &Path) -> Result<PathBuf, SecurityError> {
-    let canonical_base = base.canonicalize().map_err(|e| {
-        SecurityError::PathOutsideRoot(format!("Failed to canonicalize base: {}", e))
-    })?;
-    let canonical_entry = entry_path.canonicalize().map_err(|e| {
-        SecurityError::PathOutsideRoot(format!("Failed to canonicalize entry: {}", e))
-    })?;
-
-    if !canonical_entry.starts_with(&canonical_base) {
+    // Lexical validation first: reject absolute paths and any `..` component.
+    // Do NOT rely on canonicalize() here — the extraction target directory often
+    // does not exist yet, so canonicalize would fail and block every install.
+    let normalized = normalize_join(base, entry_path)?;
+    if !normalized.starts_with(base) {
         return Err(SecurityError::ZipSlip(format!(
             "Path traversal: {:?} not under {:?}",
-            canonical_entry, canonical_base
+            normalized, base
         )));
     }
-    Ok(canonical_entry)
+    Ok(normalized)
+}
+
+/// Lexically join `entry` onto `base` and normalize `.` / `..` components.
+/// Rejects absolute `entry` paths and any escape above `base`.
+fn normalize_join(base: &Path, entry: &Path) -> Result<PathBuf, SecurityError> {
+    if entry.is_absolute() {
+        return Err(SecurityError::ZipSlip(format!(
+            "Absolute path in archive entry: {:?}",
+            entry
+        )));
+    }
+
+    let mut components = Vec::new();
+    for comp in entry.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                if components.pop().is_none() {
+                    return Err(SecurityError::ZipSlip(format!(
+                        "Path escapes base via '..': {:?}",
+                        entry
+                    )));
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => components.push(other.as_os_str().to_os_string()),
+        }
+    }
+
+    let mut result = base.to_path_buf();
+    for comp in components {
+        result.push(comp);
+    }
+    Ok(result)
 }
 
 pub fn validate_sha256(data: &[u8], expected: &str) -> Result<(), SecurityError> {

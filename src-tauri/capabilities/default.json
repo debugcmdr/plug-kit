@@ -1,14 +1,8 @@
 {
+  "identifier": "default",
+  "description": "Default capability for the main window",
   "permissions": [
     "core:default",
-    "opener:default",
-    "fs:allow-read-file",
-    "fs:allow-write-file",
-    "fs:allow-create",
-    "fs:allow-read-dir",
-    "fs:allow-app-write",
-    "fs:allow-app-read",
-    "shell:allow-execute",
-    "shell:allow-open"
+    "opener:default"
   ]
 }

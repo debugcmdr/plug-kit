@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use super::CommandOutput;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {

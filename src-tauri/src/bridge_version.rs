@@ -25,6 +25,8 @@ mod tests {
     fn test_version_match() {
         assert!(check_bridge_version(">=1.0.0", "1.0.0").unwrap());
         assert!(check_bridge_version(">=1.0.0", "1.1.0").unwrap());
-        assert!(check_bridge_version(">=2.0.0", "1.0.0").is_err());
+        assert!(!check_bridge_version(">=2.0.0", "1.0.0").unwrap());
+        // Invalid constraint parses to an error
+        assert!(check_bridge_version("not-a-semver", "1.0.0").is_err());
     }
 }

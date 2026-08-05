@@ -11,7 +11,6 @@ mod bridge_version;
 mod registry;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -37,81 +36,82 @@ pub struct InstallResult {
     pub message: String,
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 async fn install_plugin(plugin_id: String, _release_url: Option<String>) -> Result<InstallResult, String> {
     let pm = plugin_manager::PluginManager::new();
     pm.install(&plugin_id).await
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 async fn uninstall_plugin(plugin_id: String) -> Result<InstallResult, String> {
     let pm = plugin_manager::PluginManager::new();
     pm.uninstall(&plugin_id).await
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 async fn list_plugins() -> Result<Vec<PluginInfo>, String> {
     let pm = plugin_manager::PluginManager::new();
     pm.list().await
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn get_cache_stats() -> Result<serde_json::Value, String> {
     let dc = dependency_cache::DependencyCache::new();
     dc.stats()
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 async fn clean_orphan_cache() -> Result<serde_json::Value, String> {
     let dc = dependency_cache::DependencyCache::new();
     dc.clean_orphans().await
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn get_settings() -> Result<serde_json::Value, String> {
     let cm = config_mgr::ConfigMgr::new();
-    cm.get_settings()
+    cm.get_settings().map_err(|e| e.to_string())
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn set_settings(settings: serde_json::Value) -> Result<(), String> {
     let cm = config_mgr::ConfigMgr::new();
-    cm.set_settings(settings)
+    cm.set_settings(settings).map_err(|e| e.to_string())
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn get_plugin_config(plugin_id: String, key: String) -> Result<Option<String>, String> {
     let cm = config_mgr::ConfigMgr::new();
-    cm.get(&plugin_id, &key)
+    cm.get(&plugin_id, &key).map_err(|e| e.to_string())
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn set_plugin_config(plugin_id: String, key: String, value: String) -> Result<(), String> {
     let cm = config_mgr::ConfigMgr::new();
-    cm.set(&plugin_id, &key, &value)
+    cm.set(&plugin_id, &key, &value).map_err(|e| e.to_string())
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn get_bridge_version() -> String {
     bridge_version::CURRENT_BRIDGE_VERSION.to_string()
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn check_bridge_compat(required: String) -> Result<bool, String> {
     bridge_version::check_bridge_version(&required, bridge_version::CURRENT_BRIDGE_VERSION)
+        .map_err(|e| e.to_string())
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 async fn list_tasks() -> Result<Vec<serde_json::Value>, String> {
-    task_queue::TaskQueue::list().await
+    Ok(task_queue::TaskQueue::list().await)
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn log_info(msg: String) {
     logger::Logger::info(&msg);
 }
 
-#[cfg_attr(tauri, command)]
+#[tauri::command]
 fn log_error(msg: String) {
     logger::Logger::error(&msg);
 }

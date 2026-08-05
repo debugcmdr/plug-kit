@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use crate::security::SecurityError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,5 +111,14 @@ impl Registry {
             }
         }
         total
+    }
+
+    /// Total number of cached dependency entries (across all names/versions/platforms).
+    pub fn entry_count(&self) -> usize {
+        let mut count = 0usize;
+        for versions in self.ffmpeg.values().chain(self.yt_dlp.values()).chain(self.other.values()) {
+            count += versions.len();
+        }
+        count
     }
 }

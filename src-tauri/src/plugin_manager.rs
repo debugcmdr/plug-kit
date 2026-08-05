@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use flate2::read::GzDecoder;
 use tar::Archive;
 use zip::ZipArchive;
-use std::io::{Read, Cursor};
+use std::io::Cursor;
 
 pub struct PluginManager {
     plugins_dir: PathBuf,
@@ -46,7 +46,7 @@ impl PluginManager {
             .await?;
         
         // 4. Validate paths (Zip-Slip prevention)
-        self.validate_extracted_paths(&tmp_dir)?;
+        self.validate_extracted_paths(&tmp_dir).map_err(|e| e.to_string())?;
         
         // 5. Move to plugins dir
         let dest_dir = self.plugins_dir.join(plugin_id);
@@ -105,7 +105,7 @@ impl PluginManager {
                     plugins.push(crate::PluginInfo {
                         id: plugin_id,
                         name: manifest.name,
-                        version: manifest.version,
+                        version: manifest.version.clone(),
                         description: manifest.description,
                         is_installed: true,
                         installed_version: Some(manifest.version),

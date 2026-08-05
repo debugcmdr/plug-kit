@@ -1,12 +1,12 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
-use crate::security::SecurityError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum PluginOutput {
     Progress(ProgressData),
     Result(ResultData),
@@ -15,7 +15,7 @@ pub enum PluginOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressData {
-    pub percent: f64,
+    pub percent: Option<f64>,
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub message: Option<String>,
@@ -82,7 +82,13 @@ impl ToolRunner {
         let stdout_handle = tokio::spawn(Self::read_stdout(stdout));
         let stderr_handle = tokio::spawn(Self::read_stderr(stderr));
 
-        let (stdout_lines, stderr_output) = tokio::try_join!(stdout_handle, stderr_handle)?;
+        let (stdout_res, stderr_res) = tokio::join!(stdout_handle, stderr_handle);
+        let stdout_lines = stdout_res
+            .map_err(|e| format!("stdout task failed: {}", e))?
+            .map_err(|e| e.to_string())?;
+        let _stderr_output = stderr_res
+            .map_err(|e| format!("stderr task failed: {}", e))?
+            .map_err(|e| e.to_string())?;
 
         // Parse last line as result
         let last_line = stdout_lines.last()
@@ -147,7 +153,7 @@ impl ToolRunner {
     }
 
     async fn read_stdout(
-        reader: impl AsyncReadExt + Send + 'static,
+        reader: impl AsyncRead + Unpin + Send + 'static,
     ) -> Result<Vec<String>, String> {
         let mut reader = BufReader::new(reader);
         let mut lines = Vec::new();
@@ -169,7 +175,7 @@ impl ToolRunner {
     }
 
     async fn read_stderr(
-        reader: impl AsyncReadExt + Send + 'static,
+        reader: impl AsyncRead + Unpin + Send + 'static,
     ) -> Result<String, String> {
         let mut reader = BufReader::new(reader);
         let mut output = String::new();

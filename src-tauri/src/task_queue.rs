@@ -82,7 +82,7 @@ impl TaskQueue {
             completed_at: None,
         };
         queue.tasks.insert(task_id.clone(), task);
-        queue.save().await.unwrap_or(());
+        queue.save().unwrap_or(());
         task_id
     }
 
@@ -95,7 +95,7 @@ impl TaskQueue {
             } else if matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled) {
                 task.completed_at = Some(chrono::Utc::now().to_rfc3339());
             }
-            queue.save().await.unwrap_or(());
+            queue.save().unwrap_or(());
         }
     }
 
@@ -103,7 +103,7 @@ impl TaskQueue {
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
             task.progress = TaskProgress { percent, speed, eta };
-            queue.save().await.unwrap_or(());
+            queue.save().unwrap_or(());
         }
     }
 

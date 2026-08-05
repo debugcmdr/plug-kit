@@ -1,5 +1,5 @@
 use crate::registry::{Registry, DepEntry};
-use crate::security::SecurityError;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use fs2::FileExt;
@@ -59,33 +59,30 @@ impl DependencyCache {
 
     fn remove_zero_ref_entries(&self, registry: &mut Registry) -> Result<(), String> {
         // Check ffmpeg
-        if let Some(refs) = &mut registry.ffmpeg {
-            refs.retain(|_ver, platforms| {
-                platforms.retain(|_plat, entry| entry.refcount > 0);
-                !platforms.is_empty()
-            });
-        }
+        let refs = &mut registry.ffmpeg;
+        refs.retain(|_ver, platforms| {
+            platforms.retain(|_plat, entry| entry.refcount > 0);
+            !platforms.is_empty()
+        });
         // Check yt-dlp
-        if let Some(refs) = &mut registry.yt_dlp {
-            refs.retain(|_ver, platforms| {
-                platforms.retain(|_plat, entry| entry.refcount > 0);
-                !platforms.is_empty()
-            });
-        }
+        let refs = &mut registry.yt_dlp;
+        refs.retain(|_ver, platforms| {
+            platforms.retain(|_plat, entry| entry.refcount > 0);
+            !platforms.is_empty()
+        });
         // Check other
-        if let Some(refs) = &mut registry.other {
-            refs.retain(|_name, versions| {
-                versions.retain(|_ver, entry| entry.refcount > 0);
-                !versions.is_empty()
-            });
-        }
+        let refs = &mut registry.other;
+        refs.retain(|_name, versions| {
+            versions.retain(|_ver, entry| entry.refcount > 0);
+            !versions.is_empty()
+        });
         Ok(())
     }
 
     fn count_entries(&self) -> Result<usize, String> {
         let registry = Registry::load_or_new(&self.registry_path)
             .map_err(|e| e.to_string())?;
-        Ok(registry.total_size() as usize)
+        Ok(registry.entry_count())
     }
 
     pub async fn install_dependency(
@@ -98,7 +95,8 @@ impl DependencyCache {
         ref_plugins: &[&str],
     ) -> Result<PathBuf, String> {
         let _lock = self.acquire_lock()?;
-        let mut registry = Registry::load_or_new(&self.registry_path)?;
+        let mut registry = Registry::load_or_new(&self.registry_path)
+            .map_err(|e| e.to_string())?;
         
         let key = format!("{}/{}", name, version);
         let dest_dir = self.cache_dir.join(&key).join(platform);
@@ -128,15 +126,15 @@ impl DependencyCache {
         
         self.add_to_registry(&mut registry, name, version, platform, entry)?;
         
-        registry.save(&self.registry_path)?;
+        registry.save(&self.registry_path).map_err(|e| e.to_string())?;
         
         Ok(dest_dir)
     }
 
-    fn acquire_lock(&self) -> Result<fs2::locked_file::LockedFile, String> {
+    fn acquire_lock(&self) -> Result<std::fs::File, String> {
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Create cache dir: {}", e))?;
-        
+
         let lock_file = self.registry_path.with_extension("lock");
         let file = fs::OpenOptions::new()
             .create(true)
@@ -144,9 +142,10 @@ impl DependencyCache {
             .write(true)
             .open(&lock_file)
             .map_err(|e| format!("Open lock file: {}", e))?;
-        
+
         file.lock_exclusive()
-            .map_err(|e| format!("Lock file: {}", e))
+            .map_err(|e| format!("Lock file: {}", e))?;
+        Ok(file)
     }
 
     fn increment_refcount(
@@ -174,11 +173,11 @@ impl DependencyCache {
         name: &str,
     ) -> Result<&'a mut HashMap<String, HashMap<String, DepEntry>>, String> {
         if name == "ffmpeg" {
-            Ok(registry.ffmpeg.get_mut(name).ok_or("ffmpeg not found")?)
+            Ok(&mut registry.ffmpeg)
         } else if name == "yt-dlp" {
-            Ok(registry.yt_dlp.get_mut(name).ok_or("yt-dlp not found")?)
+            Ok(&mut registry.yt_dlp)
         } else {
-            Ok(registry.other.get_mut(name).ok_or("dependency not found")?)
+            Ok(&mut registry.other)
         }
     }
 
