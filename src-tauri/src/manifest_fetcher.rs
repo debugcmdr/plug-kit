@@ -35,12 +35,43 @@ pub struct ManifestList {
     pub plugins: Vec<ManifestSummary>,
 }
 
+/// Default remote marketplace manifest URL (served via GitHub Raw).
+/// Points at the `market/plugins.json` file in the main repo.
+pub const DEFAULT_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/debugcmdr/plug-kit/main/market/plugins.json";
+
 /// Fetch the remote plugin marketplace manifest.
 /// Falls back to the bundled snapshot on failure (offline / GitHub blocked).
 pub async fn fetch_market_manifests() -> Result<Vec<ManifestSummary>, String> {
-    // TODO: read remote plugins.json URL from settings (github raw), with timeout.
-    // For now, serve the bundled fallback so the market UI works end-to-end.
-    Ok(bundled_manifests())
+    match fetch_remote_manifests().await {
+        Ok(plugins) if !plugins.is_empty() => Ok(plugins),
+        Ok(_) => {
+            log::warn!("Remote manifest empty, falling back to bundled snapshot");
+            Ok(bundled_manifests())
+        }
+        Err(e) => {
+            log::warn!("Remote manifest fetch failed ({}), using bundled snapshot", e);
+            Ok(bundled_manifests())
+        }
+    }
+}
+
+/// Fetch the remote marketplace manifest from GitHub Raw with a timeout.
+async fn fetch_remote_manifests() -> Result<Vec<ManifestSummary>, String> {
+    let url = std::env::var("PLUGKIT_MANIFEST_URL").unwrap_or_else(|_| DEFAULT_MANIFEST_URL.to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Build client: {}", e))?;
+
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let list: ManifestList = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Parse manifest: {}", e))?;
+    Ok(list.plugins)
 }
 
 /// Bundled fallback snapshot — compiled in, used when offline or first run.
@@ -66,9 +97,13 @@ pub async fn download_with_fallback(
 
     // Original URL first, then enabled mirrors.
     let mut sources: Vec<String> = vec![url.to_string()];
-    for mirror in settings.download_mirrors.iter().filter(|m| m.enabled) {
-        if !mirror.prefix.is_empty() {
-            sources.push(format!("{}{}", mirror.prefix, url));
+    // Mirrors only apply to GitHub-hosted downloads (GitHub is the only
+    // source that's blocked in some regions). Local / other URLs go direct.
+    if url.starts_with("https://github.com/") || url.starts_with("http://github.com/") {
+        for mirror in settings.download_mirrors.iter().filter(|m| m.enabled) {
+            if !mirror.prefix.is_empty() {
+                sources.push(format!("{}{}", mirror.prefix, url));
+            }
         }
     }
 

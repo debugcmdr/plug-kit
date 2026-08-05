@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>视频链接下载</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 24px; }
+    .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    h2 { font-size: 18px; margin-bottom: 16px; }
+    label { display: block; font-size: 13px; color: #646a73; margin: 12px 0 6px; }
+    input, select { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; }
+    input:focus, select:focus { border-color: #3370ff; }
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+    .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; width: 100%; margin-top: 16px; }
+    .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
+    .btn.secondary { background: #fff; color: #3370ff; border: 1px solid #3370ff; }
+    .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; }
+    .bar { height: 6px; background: #e8eaef; border-radius: 3px; margin-top: 12px; overflow: hidden; }
+    .bar > div { height: 100%; background: #3370ff; border-radius: 3px; transition: width .3s; }
+    .info { background: #f0f5ff; border-left: 3px solid #3370ff; padding: 10px 12px; border-radius: 4px; margin-top: 12px; font-size: 13px; color: #1f2329; }
+    .hidden { display: none; }
+    .err { color: #d54941; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>视频链接下载</h2>
+    <p style="font-size:13px; color:#646a73;">支持 YouTube、Bilibili 等站点。粘贴链接,选择清晰度,即可下载。</p>
+
+    <label>视频链接</label>
+    <input id="url" placeholder="https://www.youtube.com/watch?v=..." />
+
+    <div class="row">
+      <div>
+        <label>清晰度</label>
+        <select id="quality">
+          <option value="best">最佳画质</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="480">480p</option>
+          <option value="audio">仅音频 (MP3)</option>
+        </select>
+      </div>
+      <div>
+        <label>保存目录</label>
+        <input id="output" placeholder="默认 ~/Downloads/plugkit" />
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 16px;">
+      <button class="btn" id="btnInfo">获取信息</button>
+      <button class="btn" id="btnDownload">下载</button>
+    </div>
+
+    <div id="infoBox" class="info hidden"></div>
+    <div class="bar hidden" id="bar"><div id="barFill" style="width:0%"></div></div>
+    <div class="status" id="status">等待操作...</div>
+  </div>
+
+  <script>
+    const MT = window.MT || window.PlugKit;
+    const $ = (id) => document.getElementById(id);
+
+    function setStatus(msg, isErr) {
+      const el = $('status');
+      el.textContent = msg;
+      el.className = 'status' + (isErr ? ' err' : '');
+    }
+
+    async function getInfo() {
+      const url = $('url').value.trim();
+      if (!url) { setStatus('请输入视频链接', true); return; }
+      setStatus('获取视频信息中...');
+      try {
+        const info = await MT.invoke('list-formats', { url });
+        if (!info || info.title === undefined) { setStatus('未获取到视频信息', true); return; }
+        const box = $('infoBox');
+        box.classList.remove('hidden');
+        box.innerHTML = `<b>${info.title || '未知标题'}</b><br/>
+          时长: ${info.duration ? Math.round(info.duration) + 's' : '未知'} |
+          作者: ${info.uploader || '未知'} |
+          格式数: ${info.formats ? info.formats.length : 0}`;
+        setStatus('信息获取成功,可开始下载');
+      } catch (e) {
+        setStatus('获取信息失败: ' + e, true);
+      }
+    }
+
+    async function download() {
+      const url = $('url').value.trim();
+      if (!url) { setStatus('请输入视频链接', true); return; }
+      const quality = $('quality').value;
+      const output_dir = $('output').value.trim() || undefined;
+
+      // 进度订阅
+      const bar = $('bar'), fill = $('barFill');
+      bar.classList.remove('hidden');
+      const off = MT.onProgress((evt) => {
+        const d = evt.data || evt;
+        const pct = d.percent != null ? Math.min(100, Math.max(0, d.percent)) : 0;
+        fill.style.width = pct + '%';
+        setStatus(`${d.message || '下载中'} ${pct.toFixed(0)}%${d.speed ? ' ' + d.speed : ''}`);
+      });
+
+      $('btnDownload').disabled = true;
+      try {
+        const r = await MT.invoke('download', { url, quality, output_dir });
+        setStatus('✅ 下载完成!文件已保存到: ' + (r.output_dir || ''));
+        const files = r.files || [];
+        if (files.length) setStatus('✅ 下载完成!\n文件: ' + files.join(', '));
+      } catch (e) {
+        setStatus('❌ 下载失败: ' + e, true);
+      } finally {
+        $('btnDownload').disabled = false;
+        off();
+      }
+    }
+
+    $('btnInfo').onclick = getInfo;
+    $('btnDownload').onclick = download;
+  </script>
+</body>
+</html>

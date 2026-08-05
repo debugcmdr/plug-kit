@@ -12,6 +12,14 @@ mod logger;
 mod bridge_version;
 mod registry;
 
+/// Public API facade — used by integration tests and future CLI/headless tooling.
+pub mod api {
+    pub use crate::manifest_fetcher::{download_with_fallback, fetch_market_manifests, bundled_manifests};
+    pub use crate::dependency_cache::DependencyCache;
+    pub use crate::config_mgr::ConfigMgr;
+    pub use crate::manifest_model::Manifest;
+}
+
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
