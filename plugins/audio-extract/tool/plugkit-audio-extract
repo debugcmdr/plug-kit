@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""plugkit-audio-extract - 音频提取 / 图片转换插件(基于 ffmpeg)"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+def progress(percent, message=None):
+    line = {"type": "progress", "percent": percent}
+    if message:
+        line["message"] = message
+    print(json.dumps(line, ensure_ascii=False), flush=True)
+
+
+def result(data):
+    print(json.dumps({"type": "result", "success": True, "data": data}, ensure_ascii=False), flush=True)
+
+
+def error(code, message):
+    print(json.dumps({"type": "error", "code": code, "message": message}, ensure_ascii=False), flush=True)
+
+
+def dep(name):
+    key = f"PLUGKIT_{name.upper().replace('-', '_')}"
+    if key in os.environ:
+        return os.environ[key]
+    return name
+
+
+FFMPEG = dep("ffmpeg")
+
+
+def parse_args(argv):
+    args = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            key = a[2:].split("=")[0]
+            if "=" in a:
+                args[key] = a.split("=", 1)[1]
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                args[key] = argv[i + 1]
+                i += 1
+            else:
+                args[key] = True
+        i += 1
+    return args
+
+
+def probe_duration(path):
+    try:
+        proc = subprocess.run(
+            [dep("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        d = json.loads(proc.stdout)
+        return float(d.get("format", {}).get("duration", 0) or 0)
+    except Exception:
+        return 0
+
+
+def extract_audio(input_path, output_path, fmt="mp3"):
+    """从视频提取音轨。"""
+    if not os.path.exists(input_path):
+        error("INPUT_MISSING", f"输入文件不存在: {input_path}")
+        return
+
+    duration = probe_duration(input_path)
+    progress(0, message=f"开始提取音频 {os.path.basename(input_path)}...")
+
+    codec = {"mp3": "libmp3lame", "m4a": "aac", "wav": "pcm_s16le", "flac": "flac", "ogg": "libvorbis"}
+    cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", codec.get(fmt, "libmp3lame")]
+    if fmt == "m4a":
+        cmd += ["-b:a", "192k"]
+    cmd.append(output_path)
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except FileNotFoundError:
+        error("FFMPEG_MISSING", "未找到 ffmpeg,请先在主程序安装共享依赖")
+        return
+
+    last_pct = 0
+    for line in proc.stdout:
+        m = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
+        if m and duration > 0:
+            elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+            pct = min(99.0, (elapsed / duration) * 100)
+            if pct - last_pct >= 1:
+                progress(pct, message=f"提取中 {pct:.0f}%")
+                last_pct = pct
+
+    proc.wait()
+    if proc.returncode != 0:
+        error("FFMPEG_ERROR", f"ffmpeg 提取失败(退出码 {proc.returncode})")
+        return
+
+    progress(100, message="提取完成")
+    result({
+        "input": input_path,
+        "output": output_path,
+        "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+    })
+
+
+def convert_image(input_path, output_path, quality="90"):
+    """图片格式转换/压缩。"""
+    if not os.path.exists(input_path):
+        error("INPUT_MISSING", f"输入文件不存在: {input_path}")
+        return
+
+    progress(0, message=f"开始转换图片 {os.path.basename(input_path)}...")
+    cmd = [FFMPEG, "-y", "-i", input_path]
+    if output_path.lower().endswith((".jpg", ".jpeg")):
+        cmd += ["-q:v", quality, "-qmin", "1"]
+    elif output_path.lower().endswith(".webp"):
+        cmd += ["-quality", quality]
+    elif output_path.lower().endswith(".png"):
+        cmd += ["-compression_level", "6"]
+    cmd.append(output_path)
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError:
+        error("FFMPEG_MISSING", "未找到 ffmpeg,请先在主程序安装共享依赖")
+        return
+    except subprocess.TimeoutExpired:
+        error("TIMEOUT", "图片转换超时")
+        return
+
+    if proc.returncode != 0:
+        error("FFMPEG_ERROR", proc.stderr.strip()[-300:] or "ffmpeg 转换失败")
+        return
+
+    progress(100, message="转换完成")
+    result({
+        "input": input_path,
+        "output": output_path,
+        "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+    })
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        result({"usage": "audio-extract.py <extract-audio|convert-image> --input FILE --output FILE [--format mp3] [--quality 90]"})
+        return
+    cmd = argv[0]
+    args = parse_args(argv[1:])
+    try:
+        if cmd == "extract-audio":
+            if not args.get("input") or not args.get("output"):
+                error("MISSING_ARGS", "需要 --input 和 --output 参数")
+                return
+            extract_audio(args["input"], args["output"], args.get("format", "mp3"))
+        elif cmd == "convert-image":
+            if not args.get("input") or not args.get("output"):
+                error("MISSING_ARGS", "需要 --input 和 --output 参数")
+                return
+            convert_image(args["input"], args["output"], args.get("quality", "90"))
+        else:
+            error("UNKNOWN_CMD", f"未知命令: {cmd}")
+    except Exception as e:
+        error("PLUGIN_ERROR", str(e))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,30 @@
+{
+  "id": "audio-extract",
+  "name": "音频提取 / 图片转换",
+  "version": "0.1.0",
+  "description": "ffmpeg 提取音轨、图片格式转换与压缩",
+  "author": "plug-kit",
+  "category": "media",
+  "tags": ["audio", "image", "extract", "convert", "ffmpeg"],
+  "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
+  "dependencies": {
+    "ffmpeg": ">=6.0"
+  },
+  "bridgeVersion": ">=1.0.0",
+  "entry": {
+    "type": "cli",
+    "executable": "plugkit-audio-extract",
+    "toolDir": "tool"
+  },
+  "commands": {
+    "extract-audio": {
+      "stdinArgs": ["extract-audio", "--input", "{input}", "--output", "{output}", "--format", "{format}"],
+      "output": "progress+json"
+    },
+    "convert-image": {
+      "stdinArgs": ["convert-image", "--input", "{input}", "--output", "{output}", "--quality", "{quality}"],
+      "output": "progress+json"
+    }
+  },
+  "releaseUrl": "https://github.com/plug-kit/plugkit-audio-extract/releases/latest"
+}

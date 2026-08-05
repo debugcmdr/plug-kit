@@ -1,0 +1,34 @@
+{
+  "id": "download",
+  "name": "视频链接下载",
+  "version": "0.1.0",
+  "description": "yt-dlp 下载视频/音频/播放列表(支持 YouTube、Bilibili 等)",
+  "author": "plug-kit",
+  "category": "media",
+  "tags": ["video", "audio", "download", "yt-dlp"],
+  "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
+  "dependencies": {
+    "yt-dlp": ">=2024.01.01"
+  },
+  "bridgeVersion": ">=1.0.0",
+  "entry": {
+    "type": "cli",
+    "executable": "plugkit-download",
+    "toolDir": "tool"
+  },
+  "commands": {
+    "list-formats": {
+      "stdinArgs": ["info", "--url", "{url}"],
+      "output": "json"
+    },
+    "download": {
+      "stdinArgs": ["download", "--url", "{url}", "--quality", "{quality}", "--output-dir", "{output_dir}"],
+      "output": "progress+json"
+    },
+    "playlist": {
+      "stdinArgs": ["download", "--url", "{url}", "--playlist-items", "{range}"],
+      "output": "progress+json"
+    }
+  },
+  "releaseUrl": "https://github.com/plug-kit/plugkit-download/releases/latest"
+}

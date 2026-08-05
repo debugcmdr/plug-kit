@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""plugkit-download - 视频链接下载插件(基于 yt-dlp)"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+# ---- 复用模板辅助库(发布时打包为独立模块) ----
+def progress(percent, speed=None, eta=None, message=None):
+    line = {"type": "progress", "percent": percent}
+    if speed:
+        line["speed"] = speed
+    if eta:
+        line["eta"] = eta
+    if message:
+        line["message"] = message
+    print(json.dumps(line, ensure_ascii=False), flush=True)
+
+
+def result(data):
+    print(json.dumps({"type": "result", "success": True, "data": data}, ensure_ascii=False), flush=True)
+
+
+def error(code, message):
+    print(json.dumps({"type": "error", "code": code, "message": message}, ensure_ascii=False), flush=True)
+
+
+def dep(name):
+    key = f"PLUGKIT_{name.upper().replace('-', '_')}"
+    if key in os.environ:
+        return os.environ[key]
+    return name  # fallback to PATH
+
+
+YTDLP = dep("yt-dlp")
+
+
+def parse_args(argv):
+    """解析 --key value 或 --key=value。"""
+    args = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            key = a[2:].split("=")[0]
+            if "=" in a:
+                args[key] = a.split("=", 1)[1]
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                args[key] = argv[i + 1]
+                i += 1
+            else:
+                args[key] = True
+        i += 1
+    return args
+
+
+def info(url):
+    """获取视频信息(格式列表)。"""
+    cmd = [YTDLP, "--skip-download", "--print", "json", url]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        error("TIMEOUT", "获取视频信息超时")
+        return
+    except FileNotFoundError:
+        error("YTDLP_MISSING", "未找到 yt-dlp,请先在主程序安装共享依赖")
+        return
+    if proc.returncode != 0:
+        error("YTDLP_ERROR", proc.stderr.strip()[-500:] or "yt-dlp 执行失败")
+        return
+    # yt-dlp --print json 输出一行 JSON(可能多行,取最后一行)
+    try:
+        meta = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        error("PARSE_ERROR", "无法解析 yt-dlp 输出")
+        return
+    result({
+        "title": meta.get("title"),
+        "duration": meta.get("duration"),
+        "uploader": meta.get("uploader"),
+        "id": meta.get("id"),
+        "formats": [
+            {"format_id": f.get("format_id"), "ext": f.get("ext"),
+             "height": f.get("height"), "note": f.get("format_note"),
+             "size": f.get("filesize") or f.get("filesize_approx")}
+            for f in meta.get("formats", [])
+        ],
+        "thumbnails": meta.get("thumbnail"),
+    })
+
+
+def download(url, quality, output_dir, playlist_items=None):
+    """下载视频/音频/播放列表,输出进度。"""
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 解析 quality:best / 1080p / audio(仅音频)
+    if quality in ("audio", "mp3", "m4a"):
+        fmt = "bestaudio/best"
+        postprocess = ["-x", "--audio-format", "mp3"]
+        suffix = " 提取音频"
+    elif quality == "best":
+        fmt = "best/best"
+        postprocess = []
+        suffix = ""
+    else:
+        # 指定高度,如 1080p -> 1080
+        h = re.sub(r"\D", "", quality) or "best"
+        fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+        postprocess = []
+        suffix = f" {quality}"
+
+    cmd = [YTDLP, "--newline", "-o", os.path.join(output_dir, "%(title)s.%(ext)s")]
+    if playlist_items:
+        cmd += ["--playlist-items", playlist_items]
+    if fmt:
+        cmd += ["-f", fmt]
+    cmd += postprocess
+    cmd.append(url)
+
+    progress(0, message=f"准备下载{suffix}...")
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1, universal_newlines=True,
+        )
+    except FileNotFoundError:
+        error("YTDLP_MISSING", "未找到 yt-dlp,请先在主程序安装共享依赖")
+        return
+
+    # 解析 yt-dlp 进度行
+    last_percent = 0
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        # 进度行示例:[download]  45.5% of 10.20MiB at 2.30MiB/s ETA 00:05
+        m = re.search(r"\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)(\w+)", line)
+        if m:
+            pct = float(m.group(1))
+            speed_m = re.search(r"at\s+([\d.]+)([KMG]iB/s)", line)
+            eta_m = re.search(r"ETA\s+(\S+)", line)
+            progress(
+                pct,
+                speed=f"{speed_m.group(1)}{speed_m.group(2)}" if speed_m else None,
+                eta=eta_m.group(1) if eta_m else None,
+                message=f"下载中{suffix} {pct:.0f}%",
+            )
+            last_percent = pct
+        elif line.startswith("[download] 100%"):
+            progress(100, message="下载完成")
+        elif line.startswith("ERROR"):
+            error("YTDLP_ERROR", line)
+            return
+
+    proc.wait()
+    if proc.returncode != 0:
+        error("YTDLP_ERROR", f"yt-dlp 退出码 {proc.returncode}")
+        return
+
+    # 找到下载的文件
+    files = os.listdir(output_dir)
+    result({
+        "output_dir": output_dir,
+        "files": files,
+        "quality": quality,
+    })
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        result({"usage": "download.py <info|download> [--url URL] [--quality Q] [--output-dir DIR] [--playlist-items RANGE]"})
+        return
+    cmd = argv[0]
+    args = parse_args(argv[1:])
+
+    try:
+        if cmd == "info":
+            if not args.get("url"):
+                error("MISSING_URL", "缺少 --url 参数")
+                return
+            info(args["url"])
+        elif cmd == "download":
+            if not args.get("url"):
+                error("MISSING_URL", "缺少 --url 参数")
+                return
+            output_dir = args.get("output_dir") or os.path.join(os.path.expanduser("~"), "Downloads", "plugkit")
+            download(
+                args["url"],
+                args.get("quality", "best"),
+                output_dir,
+                args.get("playlist_items"),
+            )
+        else:
+            error("UNKNOWN_CMD", f"未知命令: {cmd}")
+    except Exception as e:
+        error("PLUGIN_ERROR", str(e))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

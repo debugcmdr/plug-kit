@@ -1,0 +1,26 @@
+{
+  "id": "convert",
+  "name": "视频格式转换",
+  "version": "0.1.0",
+  "description": "ffmpeg 视频/音频格式转换、压缩、参数调整",
+  "author": "plug-kit",
+  "category": "media",
+  "tags": ["video", "convert", "ffmpeg"],
+  "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
+  "dependencies": {
+    "ffmpeg": ">=6.0"
+  },
+  "bridgeVersion": ">=1.0.0",
+  "entry": {
+    "type": "cli",
+    "executable": "plugkit-convert",
+    "toolDir": "tool"
+  },
+  "commands": {
+    "convert": {
+      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--preset", "{preset}", "--audio-bitrate", "{audio_bitrate}"],
+      "output": "progress+json"
+    }
+  },
+  "releaseUrl": "https://github.com/plug-kit/plugkit-convert/releases/latest"
+}
