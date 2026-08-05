@@ -1,0 +1,57 @@
+# 插件发布模板 — 拷贝到插件仓库 .github/workflows/release.yml
+# 插件作者:tag vX.Y.Z 触发构建,产物为各平台 zip,上传 Release。
+
+name: Plugin Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        platform: [macos-arm64, macos-x64, windows-x64, linux-x64]
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+          - platform: macos-x64
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+          - platform: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+          - platform: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        if: contains(matrix.platform, 'macos') || matrix.platform == 'windows-x64'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      # Python 插件无需编译;Rust 插件按需编译。
+      # 此处以纯脚本插件为例:直接打包 tool/ 目录。
+      - name: Package plugin
+        run: |
+          mkdir -p dist
+          cp -R manifest.json tool dist/
+          # 计算 SHA256(写入构建摘要,发布时填入清单仓库)
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 dist/manifest.json
+          fi
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/
+          draft: true
+
+# 发布后:把 manifest 信息提交到 plug-kit/plug-kit-plugins 的 plugins.json,
+# 或让清单仓库的 action 自动拉取各插件的 Release。
