@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::security::SecurityError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub download_mirrors: Vec<MirrorConfig>,
     pub system_proxy: Option<ProxyConfig>,

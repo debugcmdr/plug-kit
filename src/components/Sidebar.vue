@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type { PluginInfo } from '../types'
 
 const emit = defineEmits<{
@@ -8,10 +9,19 @@ const emit = defineEmits<{
 
 const plugins = ref<PluginInfo[]>([])
 const searchQuery = ref('')
+const activeKey = ref<string | null>(null)
 
-onMounted(async () => {
-  plugins.value = []
-})
+async function loadInstalled() {
+  try {
+    // Installed-only view for the sidebar navigation.
+    const all = await invoke<PluginInfo[]>('list_plugins')
+    plugins.value = all.filter(p => p.is_installed)
+  } catch (e) {
+    console.error('Failed to load plugins:', e)
+  }
+}
+
+onMounted(loadInstalled)
 
 const filteredPlugins = () => {
   if (!searchQuery.value) return plugins.value
@@ -23,6 +33,7 @@ const filteredPlugins = () => {
 }
 
 function handleSelect(pluginId: string) {
+  activeKey.value = pluginId
   emit('select', pluginId)
 }
 </script>
@@ -49,8 +60,9 @@ function handleSelect(pluginId: string) {
         </template>
       </n-input>
     </div>
-    
+
     <n-menu
+      :value="activeKey"
       :options="filteredPlugins().map(p => ({
         key: p.id,
         label: p.name
@@ -58,7 +70,7 @@ function handleSelect(pluginId: string) {
       @update:value="handleSelect"
       style="padding: 0 8px;"
     />
-    
+
     <div style="padding: 16px;">
       <n-button block type="primary" @click="handleSelect('market')">
         插件市场

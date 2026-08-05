@@ -21,41 +21,74 @@ impl PluginManager {
     }
 
     pub async fn install(&self, plugin_id: &str) -> Result<crate::InstallResult, String> {
-        // 1. Fetch manifest
-        let manifest = self.fetch_manifest(plugin_id).await?;
-        
-        // 2. Validate bridge version
-        let current = crate::bridge_version::CURRENT_BRIDGE_VERSION;
-        if let Err(_) = crate::bridge_version::check_bridge_version(&manifest.bridge_version, current) {
-            return Ok(crate::InstallResult {
-                success: false,
-                plugin_id: plugin_id.to_string(),
-                message: format!("Bridge version incompatible: requires {}, has {}", 
-                    manifest.bridge_version, current),
-            });
-        }
-        
-        // 3. Download and extract
+        // 1. Resolve binary URL + sha256 from market manifest (or local reinstall).
+        let market = crate::manifest_fetcher::fetch_market_manifests()
+            .await?
+            .into_iter()
+            .find(|m| m.id == plugin_id);
+
+        let (binary_url, sha256) = match market {
+            Some(m) => {
+                let platform = current_platform();
+                let url = m.binary_url.replace("{platform}", &platform);
+                (url, m.sha256.as_deref().map(String::from))
+            }
+            None => {
+                // Local reinstall (plugin already on disk): reuse its manifest.
+                let manifest = self.fetch_manifest(plugin_id).await?;
+                (manifest.binary_url.clone(), manifest.expected_sha256.clone())
+            }
+        };
+
+        // 2. Download + verify SHA256 (with mirror fallback).
         let tmp_dir = dirs::home_dir()
             .map(|d| d.join(".plugkit/tmp").join(plugin_id))
             .unwrap_or_default();
+        // Clean any stale tmp dir from a previous failed install.
+        let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("Create tmp dir: {}", e))?;
-        
-        self.download_and_extract(&manifest.binary_url, &tmp_dir, manifest.expected_sha256.as_deref())
-            .await?;
-        
-        // 4. Validate paths (Zip-Slip prevention)
+
+        let bytes = crate::manifest_fetcher::download_with_fallback(
+            &binary_url,
+            sha256.as_deref(),
+        ).await?;
+
+        // 3. Extract (Zip-Slip protected) + validate paths.
+        self.extract_archive(&bytes, &tmp_dir, &binary_url)?;
         self.validate_extracted_paths(&tmp_dir).map_err(|e| e.to_string())?;
-        
-        // 5. Move to plugins dir
+
+        // 4. Validate bridge version (against the plugin's own manifest).
+        let manifest_path = tmp_dir.join("manifest.json");
+        if manifest_path.exists() {
+            let content = fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("Read extracted manifest: {}", e))?;
+            let manifest: crate::manifest_model::Manifest =
+                serde_json::from_str(&content)
+                    .map_err(|e| format!("Parse extracted manifest: {}", e))?;
+            let current = crate::bridge_version::CURRENT_BRIDGE_VERSION;
+            if let Err(_) = crate::bridge_version::check_bridge_version(&manifest.bridge_version, current) {
+                let _ = fs::remove_dir_all(&tmp_dir);
+                return Ok(crate::InstallResult {
+                    success: false,
+                    plugin_id: plugin_id.to_string(),
+                    message: format!("Bridge version incompatible: requires {}, has {}",
+                        manifest.bridge_version, current),
+                });
+            }
+        }
+
+        // 5. Move to plugins dir (atomic-ish).
         let dest_dir = self.plugins_dir.join(plugin_id);
         if dest_dir.exists() {
             fs::remove_dir_all(&dest_dir).map_err(|e| e.to_string())?;
         }
         fs::rename(&tmp_dir, &dest_dir)
             .map_err(|e| format!("Move plugin: {}", e))?;
-        
+
+        // 6. Install shared dependencies declared in manifest (ffmpeg/yt-dlp etc.).
+        self.install_dependencies(plugin_id).await;
+
         Ok(crate::InstallResult {
             success: true,
             plugin_id: plugin_id.to_string(),
@@ -143,36 +176,16 @@ impl PluginManager {
         Err(format!("Plugin '{}' not found", plugin_id))
     }
 
-    async fn download_and_extract(
-        &self,
-        url: &str,
-        dest: &PathBuf,
-        expected_sha256: Option<&str>,
-    ) -> Result<(), String> {
-        let client = reqwest::Client::new();
-        let bytes = client.get(url).send()
-            .await
-            .map_err(|e| format!("Download failed: {}", e))?
-            .bytes()
-            .await
-            .map_err(|e| format!("Read bytes failed: {}", e))?;
-        
-        // Verify SHA256 if provided
-        if let Some(sha256) = expected_sha256 {
-            crate::security::validate_sha256(&bytes, sha256)
-                .map_err(|e| e.to_string())?;
-        }
-        
-        // Detect archive type and extract
-        if url.ends_with(".zip") {
-            self.extract_zip(&bytes, dest)?;
-        } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-            self.extract_tar_gz(&bytes, dest)?;
+    /// Extract an archive (zip / tar.gz) into dest. The archive bytes were already
+    /// downloaded and SHA256-verified by the caller.
+    fn extract_archive(&self, bytes: &[u8], dest: &PathBuf, source_name: &str) -> Result<(), String> {
+        if source_name.ends_with(".zip") {
+            self.extract_zip(bytes, dest)
+        } else if source_name.ends_with(".tar.gz") || source_name.ends_with(".tgz") {
+            self.extract_tar_gz(bytes, dest)
         } else {
-            return Err("Unsupported archive format".to_string());
+            Err("Unsupported archive format".to_string())
         }
-        
-        Ok(())
     }
 
     fn extract_zip(&self, bytes: &[u8], dest: &PathBuf) -> Result<(), String> {
@@ -233,5 +246,36 @@ impl PluginManager {
             crate::security::validate_unzip_path(base, path)?;
         }
         Ok(())
+    }
+
+    /// Install any shared dependencies declared in the plugin manifest.
+    /// Shared deps (ffmpeg/yt-dlp) are cached in ~/.plugkit/cache/deps and injected
+    /// into the subprocess via PLUGKIT_FFMPEG / PLUGKIT_YTDLP env vars at runtime.
+    async fn install_dependencies(&self, plugin_id: &str) {
+        let Ok(Some(manifest)) = self.get_manifest(plugin_id).await else {
+            return;
+        };
+        let Some(deps) = &manifest.dependencies else {
+            return;
+        };
+        for (name, constraint) in deps {
+            // v0.2+: resolve version from semver constraint; for now log the intent.
+            log::info!("Plugin {} needs dependency {} ({}) — dependency fetching in v0.2", plugin_id, name, constraint);
+        }
+    }
+}
+
+/// Current platform string used for `{platform}` placeholder replacement.
+fn current_platform() -> String {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "windows-x64".to_string()
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64".to_string()
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "macos-x64".to_string()
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x64".to_string()
+    } else {
+        "unknown".to_string()
     }
 }

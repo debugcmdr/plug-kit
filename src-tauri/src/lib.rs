@@ -1,5 +1,6 @@
 mod security;
 mod manifest_model;
+mod manifest_fetcher;
 mod message_bridge;
 mod tool_runner;
 mod task_queue;
@@ -52,6 +53,41 @@ async fn uninstall_plugin(plugin_id: String) -> Result<InstallResult, String> {
 async fn list_plugins() -> Result<Vec<PluginInfo>, String> {
     let pm = plugin_manager::PluginManager::new();
     pm.list().await
+}
+
+/// Market view: installed plugins (from disk) + available plugins (from marketplace manifest).
+/// Each entry carries `is_installed` / `installed_version` so the UI can toggle install state.
+#[tauri::command]
+async fn market_list() -> Result<Vec<PluginInfo>, String> {
+    let pm = plugin_manager::PluginManager::new();
+    let installed = pm.list().await?;
+    let available = manifest_fetcher::fetch_market_manifests().await?;
+
+    let mut merged: Vec<PluginInfo> = Vec::new();
+    for m in available {
+        let existing = installed.iter().find(|p| p.id == m.id);
+        merged.push(PluginInfo {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            version: m.version.clone(),
+            description: m.description.clone(),
+            is_installed: existing.is_some(),
+            installed_version: existing.map(|p| p.version.clone()),
+        });
+    }
+    // Include any installed plugins not present in the market manifest.
+    for p in installed {
+        if !merged.iter().any(|m| m.id == p.id) {
+            merged.push(p);
+        }
+    }
+    Ok(merged)
+}
+
+/// Force-refresh the remote marketplace manifest cache.
+#[tauri::command]
+async fn market_refresh() -> Result<(), String> {
+    manifest_fetcher::fetch_market_manifests().await.map(|_| ())
 }
 
 #[tauri::command]
@@ -124,6 +160,8 @@ pub fn run() {
             install_plugin,
             uninstall_plugin,
             list_plugins,
+            market_list,
+            market_refresh,
             get_cache_stats,
             clean_orphan_cache,
             get_settings,

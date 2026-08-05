@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type { Task } from '../types'
 
 export const tasks = ref<Task[]>([])
@@ -16,4 +17,13 @@ export function updateTask(taskId: string, updates: Partial<Task>) {
 
 export function removeTask(taskId: string) {
   tasks.value = tasks.value.filter(t => t.task_id !== taskId)
+}
+
+/** Load persisted tasks from the backend (list_tasks command). */
+export async function fetchTasks() {
+  try {
+    tasks.value = await invoke<Task[]>('list_tasks')
+  } catch (e) {
+    console.error('Failed to load tasks:', e)
+  }
 }

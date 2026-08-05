@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import type { Task } from '../types'
+import { tasks, fetchTasks } from '../stores/tasks'
 
-const tasks = ref<Task[]>([])
 const showPanel = ref(false)
 
-onMounted(async () => {
-  tasks.value = []
-})
+onMounted(fetchTasks)
 
 function togglePanel() {
   showPanel.value = !showPanel.value
@@ -39,7 +36,7 @@ function formatTime(dateStr: string) {
         </n-button>
       </n-space>
     </n-layout-footer>
-    
+
     <n-drawer v-model:show="showPanel" :width="400" placement="bottom">
       <n-drawer-content title="任务中心">
         <n-empty v-if="tasks.length === 0" description="暂无任务" />
@@ -48,6 +45,7 @@ function formatTime(dateStr: string) {
             v-for="task in tasks.slice().reverse()"
             :key="task.task_id"
             :title="task.plugin_id"
+            :content="`${task.status} · ${task.progress.percent.toFixed(1)}%`"
             :time="formatTime(task.created_at)"
           />
         </n-timeline>
