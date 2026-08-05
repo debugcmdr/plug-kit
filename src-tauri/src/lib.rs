@@ -2,6 +2,7 @@ mod security;
 mod manifest_model;
 mod manifest_fetcher;
 mod message_bridge;
+mod protocol;
 mod tool_runner;
 mod task_queue;
 mod dependency_cache;
@@ -12,6 +13,18 @@ mod bridge_version;
 mod registry;
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
+
+/// Bridge entry point: plugin iframes send postMessage -> window listener ->
+/// this command -> dispatched to the right backend service.
+#[tauri::command]
+async fn bridge_message(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    msg: message_bridge::BridgeMessage,
+) -> message_bridge::BridgeResponse {
+    message_bridge::handle_bridge_message(plugin_id, msg, app).await
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -154,7 +167,7 @@ fn log_error(msg: String) {
 
 pub fn run() {
     env_logger::init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             install_plugin,
@@ -162,6 +175,7 @@ pub fn run() {
             list_plugins,
             market_list,
             market_refresh,
+            bridge_message,
             get_cache_stats,
             clean_orphan_cache,
             get_settings,
@@ -173,7 +187,8 @@ pub fn run() {
             list_tasks,
             log_info,
             log_error,
-        ])
+        ]);
+    protocol::register_protocol(builder)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

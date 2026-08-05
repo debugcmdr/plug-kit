@@ -107,6 +107,25 @@ impl TaskQueue {
         }
     }
 
+    /// Cancel a task (marks it Cancelled; the running subprocess is killed by ToolRunner).
+    pub async fn cancel(task_id: &str) {
+        let mut queue = TASK_QUEUE.lock().await;
+        if let Some(task) = queue.tasks.get_mut(task_id) {
+            task.status = TaskStatus::Cancelled;
+            task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+            queue.save().unwrap_or(());
+        }
+    }
+
+    /// Pause a task (marks it Paused; resume is a v0.2+ operation).
+    pub async fn pause(task_id: &str) {
+        let mut queue = TASK_QUEUE.lock().await;
+        if let Some(task) = queue.tasks.get_mut(task_id) {
+            task.status = TaskStatus::Paused;
+            queue.save().unwrap_or(());
+        }
+    }
+
     fn save(&self) -> Result<(), String> {
         let tasks_file = Self::tasks_path();
         if let Some(parent) = tasks_file.parent() {

@@ -1,44 +1,49 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, ref, onMounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 
 const props = defineProps<{
   pluginId: string
 }>()
 
-const message = useMessage()
 const loading = ref(false)
-const iframeSrc = ref('')
-const bridgeVersion = ref('')
-const iframeLoaded = ref(false)
+const loadError = ref('')
+
+// Load the plugin's iframe UI from ~/.plugkit/plugins/{id}/tool/index.html via
+// the custom plugkit:// protocol (which also injects the bridge SDK).
+const iframeSrc = computed(() =>
+  `plugkit://plugin/${props.pluginId}/tool/index.html`
+)
+
+async function checkBridge() {
+  try {
+    const ok = await invoke<boolean>('check_bridge_compat', { required: '>=1.0.0' })
+    if (!ok) {
+      loadError.value = '此插件需要更新以兼容当前主程序版本'
+    }
+  } catch (e) {
+    loadError.value = `桥接检查失败: ${e}`
+  }
+}
 
 onMounted(async () => {
   loading.value = true
   try {
-    message.info(`加载插件: ${props.pluginId}`)
-    iframeLoaded.value = true
+    await checkBridge()
   } finally {
     loading.value = false
   }
 })
-
-function handleMessage(event: MessageEvent) {
-  if (event.data?.type === 'plugkit:version') {
-    bridgeVersion.value = event.data.version
-  } else if (event.data?.type === 'plugkit:response') {
-    console.log('Response from plugin:', event.data)
-  }
-}
-
-window.addEventListener('message', handleMessage)
 </script>
 
 <template>
   <n-spin :show="loading">
     <div style="height: calc(100vh - 200px); border-radius: 8px; overflow: hidden; background: #fff;">
       <iframe
-        v-if="iframeLoaded"
-        :src="iframeSrc || 'about:blank'"
+        v-if="!loadError"
+        :key="props.pluginId"
+        :src="iframeSrc"
+        data-plugin
         style="width: 100%; height: 100%; border: none;"
         sandbox="allow-scripts allow-same-origin allow-forms"
       />
@@ -46,11 +51,8 @@ window.addEventListener('message', handleMessage)
         <n-icon size="48" style="color: var(--n-text-color-3);">
           <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
         </n-icon>
-        <n-p style="color: var(--n-text-color-3);">插件界面加载中...</n-p>
+        <n-p style="color: var(--n-text-color-3);">{{ loadError || '插件界面加载中...' }}</n-p>
       </div>
-    </div>
-    <div v-if="bridgeVersion" style="margin-top: 8px; color: var(--n-text-color-3); font-size: 12px;">
-      Bridge Version: {{ bridgeVersion }}
     </div>
   </n-spin>
 </template>

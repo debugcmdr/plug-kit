@@ -2821,6 +2821,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "fs2",
+ "http 1.5.0",
  "log",
  "once_cell",
  "reqwest 0.11.27",
