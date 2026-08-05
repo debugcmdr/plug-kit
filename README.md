@@ -60,11 +60,34 @@ handle(sys.argv[1], parse_args(sys.argv[2:]))
 
 插件 UI 通过主程序注入的 `window.MT` / `window.PlugKit` 调用命令、订阅进度、读写配置。
 
+## 🚀 发布新版本
+
+内置插件随主仓库分发。发布流程:
+
+```bash
+# 1. 打 tag(触发 CI 构建 + 打包插件)
+git tag v0.1.1
+git push origin v0.1.1
+
+# 2. 打包插件 zip(确定性,sha256 可复现)→ 生成到 release/plugins/
+./scripts/package-plugins.sh v0.1.1
+
+# 3. 创建 GitHub Release 并上传插件 zip
+./scripts/release.sh v0.1.1
+
+# 4. 确认 market/plugins.json 的 sha256 与 Release 实际一致后提交推送
+git add market/plugins.json src-tauri/assets/fallback-manifests.json
+git commit -m "chore: sync v0.1.1 plugin manifests"
+git push origin main
+```
+
+> 注意:GitHub Raw CDN 缓存最长 5 分钟,发布后稍等片刻再验证市场拉取。
+
 ## 🏗 架构
 
 ```
 PlugKit 主程序 (Tauri 2 + Vue 3)
-├── 市场清单:GitHub Raw plugins.json + 内置兜底快照 + 多镜像降级
+├── 市场清单:GitHub Raw market/plugins.json + 内置兜底快照 + 多镜像降级
 ├── 插件包:GitHub Release zip + SHA256 + Zip-Slip 校验
 ├── 插件运行:子进程 + 标准 stdout JSON 协议 + 进度推送
 ├── 插件 UI:plugkit:// 自定义协议加载 iframe + 桥接 SDK 注入
