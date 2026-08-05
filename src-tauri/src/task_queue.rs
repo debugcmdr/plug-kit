@@ -121,7 +121,7 @@ impl TaskQueue {
 
     fn tasks_path() -> PathBuf {
         dirs::home_dir()
-            .map(|d| d.join(".multitool/tasks/tasks.json"))
+            .map(|d| d.join(".plugkit/tasks/tasks.json"))
             .unwrap_or_default()
     }
 }

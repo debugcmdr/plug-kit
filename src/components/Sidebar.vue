@@ -37,7 +37,7 @@ function handleSelect(pluginId: string) {
     style="height: 100%;"
   >
     <div style="padding: 16px;">
-      <n-h3 strong style="margin-bottom: 16px;">多媒体工具箱</n-h3>
+      <n-h3 strong style="margin-bottom: 16px;">PlugKit | 工具市场</n-h3>
       <n-input
         v-model:value="searchQuery"
         placeholder="搜索插件..."

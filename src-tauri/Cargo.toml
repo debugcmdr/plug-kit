@@ -1,12 +1,12 @@
 [package]
-name = "multitool"
+name = "plugkit"
 version = "0.1.0"
-description = "Open-source multimedia toolbox with plugin architecture"
+description = "PlugKit | 工具市场 — Open-source multimedia toolbox with plugin architecture"
 authors = []
 edition = "2021"
 
 [lib]
-name = "multitool_lib"
+name = "plugkit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

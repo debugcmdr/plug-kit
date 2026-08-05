@@ -2286,34 +2286,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multitool"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs 5.0.1",
- "env_logger",
- "flate2",
- "fs2",
- "log",
- "once_cell",
- "reqwest 0.11.27",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
- "walkdir",
- "zip",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2838,6 +2810,34 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
+]
+
+[[package]]
+name = "plugkit"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "env_logger",
+ "flate2",
+ "fs2",
+ "log",
+ "once_cell",
+ "reqwest 0.11.27",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]

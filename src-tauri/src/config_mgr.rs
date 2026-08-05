@@ -48,7 +48,7 @@ impl ConfigMgr {
         Self {
             settings_path: dirs::home_dir()
                 .unwrap_or_default()
-                .join(".multitool")
+                .join(".plugkit")
                 .join("settings.json"),
         }
     }
@@ -84,7 +84,7 @@ impl ConfigMgr {
     pub fn get(&self, plugin_id: &str, key: &str) -> Result<Option<String>, SecurityError> {
         let config_dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".multitool")
+            .join(".plugkit")
             .join("configs")
             .join(plugin_id);
         let config_file = config_dir.join("settings.json");
@@ -103,7 +103,7 @@ impl ConfigMgr {
     pub fn set(&self, plugin_id: &str, key: &str, value: &str) -> Result<(), SecurityError> {
         let config_dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".multitool")
+            .join(".plugkit")
             .join("configs")
             .join(plugin_id);
         fs::create_dir_all(&config_dir).map_err(|e| {

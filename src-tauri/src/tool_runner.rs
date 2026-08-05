@@ -41,7 +41,7 @@ impl ToolRunner {
     pub fn new() -> Self {
         Self {
             work_dir: dirs::home_dir()
-                .map(|d| d.join(".multitool/tmp"))
+                .map(|d| d.join(".plugkit/tmp"))
                 .unwrap_or_default(),
         }
     }
@@ -133,7 +133,7 @@ impl ToolRunner {
 
     fn plugin_dir(&self, plugin_id: &str) -> PathBuf {
         dirs::home_dir()
-            .map(|d| d.join(".multitool/plugins").join(plugin_id))
+            .map(|d| d.join(".plugkit/plugins").join(plugin_id))
             .unwrap_or_default()
     }
 

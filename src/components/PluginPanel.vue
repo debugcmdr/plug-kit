@@ -23,9 +23,9 @@ onMounted(async () => {
 })
 
 function handleMessage(event: MessageEvent) {
-  if (event.data?.type === 'multitool:version') {
+  if (event.data?.type === 'plugkit:version') {
     bridgeVersion.value = event.data.version
-  } else if (event.data?.type === 'multitool:response') {
+  } else if (event.data?.type === 'plugkit:response') {
     console.log('Response from plugin:', event.data)
   }
 }

@@ -1,6 +1,6 @@
 (function(window) {
   'use strict';
-  const CHANNEL = 'multitool';
+  const CHANNEL = 'plugkit';
   const BRIDGE_VERSION = '1.0.0';
   const pending = new Map();
   
@@ -52,6 +52,6 @@
       error: function(msg) { return invoke('log_error', { msg: msg }); }
     }
   };
-  window.Multitool = MT;
+  window.PlugKit = MT;
   window.MT = MT;
 })(window);

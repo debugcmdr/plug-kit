@@ -12,7 +12,7 @@ pub struct DependencyCache {
 impl DependencyCache {
     pub fn new() -> Self {
         let cache_dir = dirs::home_dir()
-            .map(|d| d.join(".multitool/cache/deps"))
+            .map(|d| d.join(".plugkit/cache/deps"))
             .unwrap_or_default();
         Self {
             cache_dir: cache_dir.clone(),

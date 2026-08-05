@@ -20,7 +20,7 @@ impl Logger {
     fn write_log(level: &str, msg: &str) {
         let log_dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".multitool")
+            .join(".plugkit")
             .join("logs");
         let log_file = log_dir.join(format!("{}.log", Local::now().format("%Y-%m-%d")));
 

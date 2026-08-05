@@ -15,7 +15,7 @@ impl PluginManager {
     pub fn new() -> Self {
         Self {
             plugins_dir: dirs::home_dir()
-                .map(|d| d.join(".multitool/plugins"))
+                .map(|d| d.join(".plugkit/plugins"))
                 .unwrap_or_default(),
         }
     }
@@ -37,7 +37,7 @@ impl PluginManager {
         
         // 3. Download and extract
         let tmp_dir = dirs::home_dir()
-            .map(|d| d.join(".multitool/tmp").join(plugin_id))
+            .map(|d| d.join(".plugkit/tmp").join(plugin_id))
             .unwrap_or_default();
         fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("Create tmp dir: {}", e))?;
