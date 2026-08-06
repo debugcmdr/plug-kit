@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import TopBar from './components/TopBar.vue'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
-import TaskBar from './components/TaskBar.vue'
 
 const activePlugin = ref<string | null>(null)
 
-function selectPlugin(pluginId: string) {
-  activePlugin.value = pluginId
+function selectPlugin(target: string) {
+  activePlugin.value = target
 }
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}
@@ -42,15 +42,15 @@ window.addEventListener('message', (e) => {
   <n-config-provider>
     <n-message-provider>
       <n-dialog-provider>
-        <n-layout has-sider style="height: 100vh;">
-          <Sidebar @select="selectPlugin" />
-          <n-layout>
-            <n-layout-content style="padding: 16px;">
+        <div style="height: 100vh; display: flex; flex-direction: column;">
+          <TopBar />
+          <div style="flex: 1; display: flex; min-height: 0;">
+            <Sidebar @select="selectPlugin" />
+            <div style="flex: 1; min-width: 0; overflow: auto;">
               <MainContent :active-plugin="activePlugin" @update:active-plugin="selectPlugin" />
-            </n-layout-content>
-            <TaskBar />
-          </n-layout>
-        </n-layout>
+            </div>
+          </div>
+        </div>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
@@ -66,6 +66,6 @@ window.addEventListener('message', (e) => {
 html, body, #app {
   height: 100%;
   width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
 }
 </style>

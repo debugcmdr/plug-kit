@@ -41,15 +41,8 @@ fn audio_extract_manifest_parses() {
 }
 
 #[test]
-fn hello_manifest_parses() {
-    // The hello test plugin lives in ~/.plugkit (installed manually).
-    let home = std::env::var("HOME").unwrap();
-    let path = std::path::Path::new(&home).join(".plugkit/plugins/hello/manifest.json");
-    if !path.exists() {
-        eprintln!("SKIP: hello plugin not installed");
-        return;
-    }
-    let content = std::fs::read_to_string(&path).unwrap();
-    let m: Manifest = serde_json::from_str(&content).expect("hello manifest parses");
-    assert_eq!(m.id, "hello");
+fn download_manifest_has_no_binary_url() {
+    // 运行时 manifest 不携带市场字段 binaryUrl(v5 设计:市场元数据在清单层)。
+    let m = parse_plugin("download");
+    assert!(m.binary_url.is_none(), "runtime manifest should not carry binaryUrl");
 }
