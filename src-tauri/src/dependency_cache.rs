@@ -296,6 +296,13 @@ impl DependencyCache {
         fs::rename(&tmp, dest.join(binary_name))
             .map_err(|e| format!("Rename file: {}", e))?;
 
+        // 可执行权限
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(dest.join(binary_name), fs::Permissions::from_mode(0o755));
+        }
+
         Ok(())
     }
 

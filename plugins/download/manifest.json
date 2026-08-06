@@ -1,11 +1,11 @@
 {
   "id": "download",
-  "name": "视频链接下载",
+  "name": "万能下载",
   "version": "0.1.0",
-  "description": "yt-dlp 下载视频/音频/播放列表(支持 YouTube、Bilibili 等)",
+  "description": "下载网页链接中的视频 / 音频 / 图片 / 直播(支持 YouTube、Bilibili 等)",
   "author": "plug-kit",
   "category": "media",
-  "tags": ["video", "audio", "download", "yt-dlp"],
+  "tags": ["video", "audio", "image", "live", "download", "yt-dlp"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
     "yt-dlp": ">=2024.01.01"
@@ -22,13 +22,9 @@
       "output": "json"
     },
     "download": {
-      "stdinArgs": ["download", "--url", "{url}", "--quality", "{quality}", "--output-dir", "{output_dir}"],
-      "output": "progress+json"
-    },
-    "playlist": {
-      "stdinArgs": ["download", "--url", "{url}", "--playlist-items", "{range}"],
+      "stdinArgs": ["download", "--url", "{url}", "--category", "{category}", "--quality", "{quality}", "--output-dir", "{output_dir}", "--extra", "{extra}"],
       "output": "progress+json"
     }
   },
-  "releaseUrl": "https://github.com/plug-kit/plugkit-download/releases/latest"
+  "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest"
 }

@@ -73,10 +73,13 @@ impl ToolRunner {
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
+        // 解析共享依赖真实路径(缓存优先;ffmpeg 系统 PATH 优先)
+        let dep_envs = self.resolve_dependency_envs(plugin_id, &manifest).await;
+
         let mut child = Command::new(&exe)
             .args(&args)
             .current_dir(&self.work_dir)
-            .envs(self.dependency_envs(&manifest))
+            .envs(dep_envs)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -164,15 +167,30 @@ impl ToolRunner {
         }
     }
 
-    fn dependency_envs(&self, manifest: &crate::manifest_model::Manifest) -> Vec<(String, String)> {
+    /// 解析插件声明依赖为真实可执行路径并注入环境变量。
+    /// key 规则:PLUGKIT_{name.upper().replace('-', '_')}(与插件 dep() 一致)。
+    /// 优先系统 PATH(ffmpeg),否则用共享缓存路径。
+    async fn resolve_dependency_envs(
+        &self,
+        plugin_id: &str,
+        manifest: &crate::manifest_model::Manifest,
+    ) -> Vec<(String, String)> {
         let mut envs = Vec::new();
-        if let Some(deps) = &manifest.dependencies {
-            for name in deps.keys() {
-                match name.to_lowercase().as_str() {
-                    "ffmpeg" => envs.push(("PLUGKIT_FFMPEG".into(), "ffmpeg".into())),
-                    "yt-dlp" => envs.push(("PLUGKIT_YTDLP".into(), "yt-dlp".into())),
-                    _ => {}
-                }
+        let Some(deps) = &manifest.dependencies else {
+            return envs;
+        };
+        let dc = crate::dependency_cache::DependencyCache::new();
+        for name in deps.keys() {
+            let key = format!("PLUGKIT_{}", name.to_uppercase().replace('-', "_"));
+            // 系统 PATH 已可用(如 ffmpeg)→ 直接复用,免下载
+            if crate::dep_manifest::dep_available_on_path(name) {
+                envs.push((key, name.to_string()));
+                continue;
+            }
+            // 走共享缓存(下载或复用缓存)
+            match dc.ensure_dependency(name, plugin_id).await {
+                Ok(path) => envs.push((key, path.to_string_lossy().to_string())),
+                Err(e) => log::warn!("resolve dep {} for {}: {}", name, plugin_id, e),
             }
         }
         envs

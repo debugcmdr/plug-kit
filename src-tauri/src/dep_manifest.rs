@@ -16,25 +16,28 @@ pub struct DepSpec {
 /// 解析当前平台 + 指定依赖名,返回可安装的 DepSpec。
 /// 若依赖在系统 PATH 上已可用(如 ffmpeg),返回 None → 优先复用系统。
 pub fn resolve_dep_spec(name: &str) -> Option<DepSpec> {
-    let platform = current_platform();
-    let (name_lower, binary_name, url, sha256) = match name.to_lowercase().as_str() {
-        "yt-dlp" => (
-            "yt-dlp",
-            "yt-dlp",
-            // yt-dlp 官方发布(单文件 Python 可执行)
-            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
-            // 官方发布是变动的,下载后按实际值更新;安装流程会校验
-            "",
-        ),
-        _ => return None,
+    match name.to_lowercase().as_str() {
+        "yt-dlp" => Some(ytdlp_spec_for_platform()),
+        _ => None,
+    }
+}
+
+/// yt-dlp 按平台选择独立二进制(内置 Python,无 shebang 依赖)。
+/// macOS: yt-dlp_macos / Linux: yt-dlp_linux / Windows: yt-dlp.exe
+fn ytdlp_spec_for_platform() -> DepSpec {
+    let (asset, binary_name) = if cfg!(target_os = "windows") {
+        ("yt-dlp.exe", "yt-dlp.exe")
+    } else if cfg!(target_os = "macos") {
+        ("yt-dlp_macos", "yt-dlp")
+    } else {
+        ("yt-dlp_linux", "yt-dlp")
     };
-    let _ = platform;
-    Some(DepSpec {
-        name: name_lower.to_string(),
-        url: url.to_string(),
-        sha256: sha256.to_string(),
+    DepSpec {
+        name: "yt-dlp".to_string(),
+        url: format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{}", asset),
+        sha256: String::new(), // 官方发布不固定 sha256
         binary_name: binary_name.to_string(),
-    })
+    }
 }
 
 /// 该依赖是否已在系统 PATH 可用(此时无需下载)。

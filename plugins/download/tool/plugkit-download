@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""plugkit-download - 视频链接下载插件(基于 yt-dlp)"""
+"""plugkit-download - 万能下载工具(基于 yt-dlp)
+
+支持:视频 / 音频 / 图片 / 直播 四类下载。
+交互:「提取资源列表 → 选择清晰度/类型 → 下载」。
+"""
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
-# ---- 复用模板辅助库(发布时打包为独立模块) ----
+# ---- 协议辅助(与主程序 plugkit 协议对齐) ----
 def progress(percent, speed=None, eta=None, message=None):
     line = {"type": "progress", "percent": percent}
     if speed:
@@ -34,16 +39,23 @@ def dep(name):
 
 
 YTDLP = dep("yt-dlp")
+FFMPEG = dep("ffmpeg")
+
+# 分类对应的 yt-dlp 选择器
+CATEGORY_VIDEO = "video"    # 视频(视频+音频)
+CATEGORY_AUDIO = "audio"    # 音频(仅音频 mp3)
+CATEGORY_IMAGE = "image"    # 图片(缩略图/原图)
+CATEGORY_LIVE = "live"      # 直播流
 
 
 def parse_args(argv):
-    """解析 --key value 或 --key=value。"""
     args = {}
     i = 0
     while i < len(argv):
         a = argv[i]
         if a.startswith("--"):
-            key = a[2:].split("=")[0]
+            # 去掉前导 --,连字符转下划线(便于 args 里用 output_dir 等键)
+            key = a[2:].split("=")[0].replace("-", "_")
             if "=" in a:
                 args[key] = a.split("=", 1)[1]
             elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
@@ -55,86 +67,100 @@ def parse_args(argv):
     return args
 
 
+# ---------------------------------------------------------------- 提取信息
 def info(url):
-    """获取视频信息(格式列表)。"""
-    cmd = [YTDLP, "--skip-download", "--print", "json", url]
+    """提取资源信息:标题、分类可用格式列表(清晰度/大小)。"""
+    # -J/--dump-json 输出完整 JSON(比 --print json 更可靠)
+    cmd = [YTDLP, "--skip-download", "--no-warnings", "-J", url]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     except subprocess.TimeoutExpired:
-        error("TIMEOUT", "获取视频信息超时")
+        error("TIMEOUT", "提取信息超时")
         return
     except FileNotFoundError:
-        error("YTDLP_MISSING", "未找到 yt-dlp,请先在主程序安装共享依赖")
+        error("YTDLP_MISSING", "未找到 yt-dlp,请先安装共享依赖")
         return
     if proc.returncode != 0:
-        error("YTDLP_ERROR", proc.stderr.strip()[-500:] or "yt-dlp 执行失败")
+        err = proc.stderr.strip()[-400:]
+        error("YTDLP_ERROR", err or "yt-dlp 提取失败")
         return
-    # yt-dlp --print json 输出一行 JSON(可能多行,取最后一行)
     try:
         meta = json.loads(proc.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
         error("PARSE_ERROR", "无法解析 yt-dlp 输出")
         return
+
+    # 整理视频格式列表(去重、按清晰度排序)
+    formats = []
+    seen = set()
+    for f in meta.get("formats", []):
+        fmt_id = f.get("format_id")
+        if not fmt_id:
+            continue
+        height = f.get("height")
+        ext = f.get("ext", "")
+        note = f.get("format_note") or ""
+        size = f.get("filesize") or f.get("filesize_approx")
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+
+        is_video = vcodec != "none"
+        if is_video:
+            key = (height, ext)
+            if key in seen:
+                continue
+            seen.add(key)
+            label = f"{height}p" if height else (note or "未知清晰度")
+            formats.append({
+                "id": fmt_id, "type": "video", "label": label,
+                "ext": ext, "size": size, "height": height, "note": note,
+            })
+    # 按清晰度降序
+    formats.sort(key=lambda f: f["height"] or 0, reverse=True)
+
+    # 音频格式(取最佳音频的 ext)
+    audio_ext = "m4a"
+    for f in meta.get("formats", []):
+        if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none"):
+            audio_ext = f.get("ext", "m4a")
+            break
+
     result({
         "title": meta.get("title"),
-        "duration": meta.get("duration"),
         "uploader": meta.get("uploader"),
-        "id": meta.get("id"),
-        "formats": [
-            {"format_id": f.get("format_id"), "ext": f.get("ext"),
-             "height": f.get("height"), "note": f.get("format_note"),
-             "size": f.get("filesize") or f.get("filesize_approx")}
-            for f in meta.get("formats", [])
-        ],
-        "thumbnails": meta.get("thumbnail"),
+        "duration": meta.get("duration"),
+        "thumbnail": meta.get("thumbnail"),
+        "webpage_url": meta.get("webpage_url") or meta.get("original_url"),
+        "is_live": meta.get("is_live", False),
+        "categories": ["video", "audio", "image", "live"] if meta.get("is_live") else ["video", "audio", "image"],
+        "video_formats": formats[:12],   # 最多 12 个清晰度
+        "audio_ext": audio_ext,
+        "best_height": max([f["height"] for f in formats if f["height"]] or [0]),
     })
 
 
-def download(url, quality, output_dir, playlist_items=None):
-    """下载视频/音频/播放列表,输出进度。"""
-    os.makedirs(output_dir, exist_ok=True)
-
-    # 解析 quality:best / 1080p / audio(仅音频)
-    if quality in ("audio", "mp3", "m4a"):
-        fmt = "bestaudio/best"
-        postprocess = ["-x", "--audio-format", "mp3"]
-        suffix = " 提取音频"
-    elif quality == "best":
-        fmt = "best/best"
-        postprocess = []
-        suffix = ""
-    else:
-        # 指定高度,如 1080p -> 1080
-        h = re.sub(r"\D", "", quality) or "best"
-        fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
-        postprocess = []
-        suffix = f" {quality}"
-
-    cmd = [YTDLP, "--newline", "-o", os.path.join(output_dir, "%(title)s.%(ext)s")]
-    if playlist_items:
-        cmd += ["--playlist-items", playlist_items]
-    if fmt:
-        cmd += ["-f", fmt]
-    cmd += postprocess
-    cmd.append(url)
-
+# ---------------------------------------------------------------- 下载
+def _run_ytdlp(cmd, url, suffix=""):
+    """执行 yt-dlp,流式解析进度并输出。返回 (ok, files)。"""
+    os.makedirs(os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else ".", exist_ok=True)
     progress(0, message=f"准备下载{suffix}...")
     try:
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            bufsize=1, universal_newlines=True,
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, universal_newlines=True,
         )
     except FileNotFoundError:
-        error("YTDLP_MISSING", "未找到 yt-dlp,请先在主程序安装共享依赖")
-        return
+        error("YTDLP_MISSING", "未找到 yt-dlp,请先安装共享依赖")
+        return False, []
+    except Exception as e:
+        error("YTDLP_ERROR", str(e))
+        return False, []
 
-    # 解析 yt-dlp 进度行
-    last_percent = 0
+    out_dir = None
     for line in proc.stdout:
         line = line.strip()
         if not line:
             continue
-        # 进度行示例:[download]  45.5% of 10.20MiB at 2.30MiB/s ETA 00:05
         m = re.search(r"\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)(\w+)", line)
         if m:
             pct = float(m.group(1))
@@ -146,31 +172,84 @@ def download(url, quality, output_dir, playlist_items=None):
                 eta=eta_m.group(1) if eta_m else None,
                 message=f"下载中{suffix} {pct:.0f}%",
             )
-            last_percent = pct
+        elif line.startswith("[download] Destination:"):
+            dst = line.split("Destination:", 1)[1].strip()
+            out_dir = os.path.dirname(dst) or "."
         elif line.startswith("[download] 100%"):
             progress(100, message="下载完成")
+        elif "has already been downloaded" in line:
+            progress(100, message="已存在,跳过下载")
         elif line.startswith("ERROR"):
             error("YTDLP_ERROR", line)
-            return
+            proc.kill()
+            return False, []
 
     proc.wait()
-    if proc.returncode != 0:
+    if proc.returncode != 0 and proc.returncode is not None:
         error("YTDLP_ERROR", f"yt-dlp 退出码 {proc.returncode}")
-        return
+        return False, []
 
-    # 找到下载的文件
-    files = os.listdir(output_dir)
-    result({
-        "output_dir": output_dir,
-        "files": files,
-        "quality": quality,
-    })
+    # 收集输出文件
+    files = []
+    if out_dir and os.path.isdir(out_dir):
+        files = sorted(os.listdir(out_dir))
+    return True, files
+
+
+def download(url, category, quality, output_dir, extra=""):
+    """按分类下载。quality: best / 1080 / 720 / ... ;extra: 直播时长等。"""
+    os.makedirs(output_dir, exist_ok=True)
+    pattern = os.path.join(output_dir, "%(title)s.%(ext)s")
+
+    if category == CATEGORY_AUDIO:
+        # 音频:提取 mp3
+        cmd = [YTDLP, "--newline", "-x", "--audio-format", "mp3", "--audio-quality", "0",
+               "-o", pattern]
+        if quality and quality != "best":
+            cmd += ["-f", f"bestaudio[abr<={quality}]/bestaudio/best"]
+        cmd.append(url)
+        ok, files = _run_ytdlp(cmd, url, suffix=" 提取音频")
+        if ok:
+            result({"output_dir": output_dir, "files": files, "category": category})
+
+    elif category == CATEGORY_IMAGE:
+        # 图片:下载封面/最高质量图片
+        cmd = [YTDLP, "--newline", "--skip-download", "--write-thumbnail",
+               "--convert-thumbnails", "jpg", "-o", pattern]
+        cmd.append(url)
+        ok, files = _run_ytdlp(cmd, url, suffix=" 图片")
+        if ok:
+            result({"output_dir": output_dir, "files": files, "category": category})
+
+    elif category == CATEGORY_LIVE:
+        # 直播:实时录制(可带时长限制 extra=Nm)
+        cmd = [YTDLP, "--newline", "-f", "best", "-o", pattern]
+        if extra:
+            cmd += ["--wait-for-video", "5"]
+            cmd += ["--live-from-start"] if extra == "from_start" else []
+        cmd.append(url)
+        ok, files = _run_ytdlp(cmd, url, suffix=" 直播")
+        if ok:
+            result({"output_dir": output_dir, "files": files, "category": category})
+
+    else:
+        # 视频:按清晰度选择
+        if quality and quality != "best":
+            h = re.sub(r"\D", "", quality)
+            fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+        else:
+            fmt = "bestvideo+bestaudio/best"
+        cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
+        cmd.append(url)
+        ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}")
+        if ok:
+            result({"output_dir": output_dir, "files": files, "category": category})
 
 
 def main():
     argv = sys.argv[1:]
     if not argv:
-        result({"usage": "download.py <info|download> [--url URL] [--quality Q] [--output-dir DIR] [--playlist-items RANGE]"})
+        result({"usage": "download <info|download> --url URL [--category video|audio|image|live] [--quality best|1080|720|480] [--output-dir DIR]"})
         return
     cmd = argv[0]
     args = parse_args(argv[1:])
@@ -185,12 +264,13 @@ def main():
             if not args.get("url"):
                 error("MISSING_URL", "缺少 --url 参数")
                 return
-            output_dir = args.get("output_dir") or os.path.join(os.path.expanduser("~"), "Downloads", "plugkit")
+            out = args.get("output_dir") or os.path.join(os.path.expanduser("~"), "Downloads", "PlugKit")
             download(
                 args["url"],
+                args.get("category", CATEGORY_VIDEO),
                 args.get("quality", "best"),
-                output_dir,
-                args.get("playlist_items"),
+                out,
+                args.get("extra", ""),
             )
         else:
             error("UNKNOWN_CMD", f"未知命令: {cmd}")
