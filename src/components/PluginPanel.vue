@@ -41,7 +41,6 @@ onMounted(async () => {
     <div style="height: calc(100vh - 200px); border-radius: 8px; overflow: hidden; background: #fff;">
       <iframe
         v-if="!loadError"
-        :key="props.pluginId"
         :src="iframeSrc"
         data-plugin
         style="width: 100%; height: 100%; border: none;"

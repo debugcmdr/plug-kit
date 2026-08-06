@@ -38,7 +38,7 @@ def dep(name):
 FFMPEG = dep("ffmpeg")
 FFPROBE = dep("ffprobe")
 
-VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".ogv", ".3gp"}
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".mpg", ".mpeg", ".rmvb"}
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".wma", ".aiff"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tiff"}
 
@@ -140,10 +140,12 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
                "-b:a", audio_bitrate or "128k"]
         cmd.append(output_path)
     else:
-        # mkv / mov / avi / m4v / ts 等:容器重封装或标准编码
+        # mkv / mov / avi / m4v / ts / mpg / flv 等
         cmd = [FFMPEG, "-y", "-i", input_path]
-        if ext == ".avi":
+        if ext in (".avi", ".mpg", ".mpeg", ".flv"):
             cmd += ["-c:v", "libx264", "-crf", crf or "23", "-c:a", "aac"]
+        elif ext in (".ts", ".m4v"):
+            cmd += ["-c:v", "copy", "-c:a", "aac"]
         else:
             cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
                     "-crf", crf or "23", "-c:a", "aac"]
@@ -170,17 +172,20 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
     codec_map = {
         ".mp3": "libmp3lame", ".m4a": "aac", ".wav": "pcm_s16le",
         ".flac": "flac", ".ogg": "libvorbis", ".aac": "aac",
-        ".wma": "wmav2", ".aiff": "pcm_s16be",
+        ".wma": "wmav2", ".aiff": "pcm_s16be", ".opus": "libopus",
+        ".amr": "libopencore_amrnb",
     }
     codec = codec_map.get(ext, "libmp3lame")
 
     cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", codec]
-    if ext == ".mp3":
-        cmd += ["-b:a", audio_bitrate or "192k"]
-    elif ext == ".m4a":
+    if ext in (".mp3", ".m4a"):
         cmd += ["-b:a", audio_bitrate or "192k"]
     elif ext == ".wav":
         cmd += ["-ar", "44100"]
+    elif ext == ".ogg":
+        cmd += ["-q:a", "4"]
+    elif ext == ".opus":
+        cmd += ["-b:a", audio_bitrate or "128k"]
     cmd.append(output_path)
 
     ok = run_with_progress(cmd, duration, "转换中")

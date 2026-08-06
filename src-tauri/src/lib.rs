@@ -40,15 +40,14 @@ async fn bridge_message(
 
 /// 原生文件选择对话框核心逻辑(命令与 bridge 共用)。
 /// `extensions`: 允许的扩展名列表(如 ["mp4","mkv"]),空则全部。
-/// 返回选中的文件路径,取消返回 None。
+/// `multiple`: 是否允许多选。
+/// 返回选中文件路径列表(多选),取消返回空列表。
 pub async fn dialog_open_file_inner(
     app: tauri::AppHandle,
     extensions: Option<Vec<String>>,
-) -> Result<Option<String>, String> {
+    multiple: bool,
+) -> Result<Vec<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    use tokio::sync::oneshot;
-
-    let (tx, rx) = oneshot::channel::<Option<String>>();
 
     // 构造对话框:按扩展名过滤
     let mut builder = app.dialog().file();
@@ -58,23 +57,34 @@ pub async fn dialog_open_file_inner(
             builder = builder.add_filter("支持的文件", &exts);
         }
     }
-    builder.pick_file(move |path| {
-        let _ = tx.send(path.map(|p| p.to_string()));
-    });
 
-    let result = rx.await.map_err(|e| format!("dialog error: {}", e))?;
+    // blocking 同步等待用户选择(模态阻塞,无超时/悬空问题)
+    let result = if multiple {
+        builder.blocking_pick_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<String>>()
+    } else {
+        match builder.blocking_pick_file() {
+            Some(p) => vec![p.to_string()],
+            None => vec![],
+        }
+    };
     Ok(result)
 }
 
 /// 原生文件选择对话框(供插件 iframe 调用)。
 /// `extensions`: 允许的扩展名列表(如 ["mp4","mkv"]),空则全部。
-/// 返回选中的文件路径,取消返回 null。
+/// `multiple`: 是否允许多选,默认 false。
+/// 返回选中文件路径列表,取消返回空数组。
 #[tauri::command]
 async fn dialog_open_file(
     app: tauri::AppHandle,
     extensions: Option<Vec<String>>,
-) -> Result<Option<String>, String> {
-    dialog_open_file_inner(app, extensions).await
+    multiple: Option<bool>,
+) -> Result<Vec<String>, String> {
+    dialog_open_file_inner(app, extensions, multiple.unwrap_or(false)).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

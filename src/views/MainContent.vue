@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import PluginPanel from '../components/PluginPanel.vue'
 import MarketPanel from '../components/MarketPanel.vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
@@ -18,6 +18,14 @@ const view = computed<'market' | 'settings' | 'plugin' | 'home'>(() =>
   : props.activePlugin === 'settings' ? 'settings'
   : props.activePlugin ? 'plugin' : 'home'
 )
+
+// 已访问过的插件 id(保持 iframe 常驻,切换时状态不丢)
+const visitedPlugins = ref<string[]>([])
+watch(() => props.activePlugin, (id) => {
+  if (id && !['market', 'settings'].includes(id) && !visitedPlugins.value.includes(id)) {
+    visitedPlugins.value.push(id)
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -29,8 +37,14 @@ const view = computed<'market' | 'settings' | 'plugin' | 'home'>(() =>
       </n-p>
     </div>
 
-    <PluginPanel v-else-if="view === 'plugin'" :plugin-id="activePlugin!" />
     <MarketPanel v-else-if="view === 'market'" />
     <SettingsPanel v-else-if="view === 'settings'" />
+
+    <!-- 插件 iframe 常驻:切换用 v-show,保留每个插件状态 -->
+    <div v-else>
+      <div v-for="pid in visitedPlugins" :key="pid" v-show="activePlugin === pid" style="height: 100%;">
+        <PluginPanel :plugin-id="pid" />
+      </div>
+    </div>
   </div>
 </template>

@@ -19,7 +19,7 @@
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error('Command ' + command + ' timed out'));
-      }, 60000);
+      }, 600000);  // 10 分钟(ASR/dialog 等长操作)
       pending.get(id).timer = timer;
     });
   }
@@ -52,9 +52,9 @@
       error: function(msg) { return invoke('log_error', { msg: msg }); }
     },
     dialog: {
-      // 打开原生文件选择对话框,按扩展名过滤。返回路径或 null(取消)。
-      openFile: function(extensions) {
-        return invoke('dialog_open_file', { extensions: extensions || [] });
+      // 打开原生文件选择对话框,按扩展名过滤。返回路径数组(取消为空数组)。
+      openFile: function(extensions, multiple) {
+        return invoke('dialog_open_file', { extensions: extensions || [], multiple: !!multiple });
       }
     }
   };

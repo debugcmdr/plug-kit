@@ -110,8 +110,9 @@ async fn dispatch(
             let exts = payload.get("extensions")
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect::<Vec<_>>());
-            let path = crate::dialog_open_file_inner(app.clone(), exts).await?;
-            Ok(serde_json::json!({ "path": path }))
+            let multiple = payload.get("multiple").and_then(|v| v.as_bool()).unwrap_or(false);
+            let paths = crate::dialog_open_file_inner(app.clone(), exts, multiple).await?;
+            Ok(serde_json::json!({ "paths": paths }))
         }
 
         other => Err(format!("Unknown bridge command: {}", other)),
