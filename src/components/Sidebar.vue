@@ -11,14 +11,11 @@ const emit = defineEmits<{
 const installedPlugins = ref<PluginInfo[]>([])
 const activeKey = ref<string | null>(null)
 
+// 顶部单条工具(不套分类):万能下载
+const TOP_TOOL = { id: 'download', label: '万能下载', icon: 'download' }
+
 // 分类 → 插件映射(语义分类,插件动态安装)
 const CATEGORIES = [
-  {
-    key: 'universal-download',
-    label: '万能下载',
-    icon: 'download',
-    pluginIds: ['download'],
-  },
   {
     key: 'convert',
     label: '格式转换',
@@ -29,7 +26,7 @@ const CATEGORIES = [
     key: 'subtitle',
     label: '文案字幕',
     icon: 'subtitle',
-    pluginIds: [],
+    pluginIds: ['subtitle'],
   },
 ]
 
@@ -66,8 +63,25 @@ function handleSelect(target: string) {
     style="height: 100%; display: flex; flex-direction: column;"
   >
     <div style="flex: 1; overflow: auto; padding: 8px 0;">
+      <!-- 顶部单条工具:万能下载(不套分类,一条即可) -->
+      <div
+        v-if="categoryPlugins([TOP_TOOL.id]).length > 0"
+        class="top-tool"
+        :class="{ active: activeKey === TOP_TOOL.id }"
+        @click="handleSelect(TOP_TOOL.id)"
+      >
+        <n-icon size="15">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        </n-icon>
+        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ TOP_TOOL.label }}</span>
+      </div>
+      <div v-else class="top-tool cat-empty" @click="handleSelect('market')">
+        <n-icon size="13"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></n-icon>
+        <span>万能下载 · 去市场安装</span>
+      </div>
+
       <!-- 分类区块 -->
-      <div v-for="cat in CATEGORIES" :key="cat.key" style="margin-bottom: 4px;">
+      <div v-for="cat in CATEGORIES" :key="cat.key" style="margin-bottom: 4px; margin-top: 8px;">
         <div
           style="display: flex; align-items: center; gap: 6px; padding: 6px 16px; font-size: 12px; color: var(--n-text-color-3);"
         >
@@ -132,6 +146,22 @@ function handleSelect(target: string) {
 </template>
 
 <style scoped>
+.top-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  margin: 4px 8px 0;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--n-text-color-1);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.top-tool:hover { background: var(--n-hover-color); }
+.top-tool.active { background: var(--n-primary-color-soft); color: var(--n-primary-color); }
+
 .cat-item {
   display: flex;
   align-items: center;
