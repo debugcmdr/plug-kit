@@ -85,6 +85,34 @@ impl DependencyCache {
         Ok(registry.entry_count())
     }
 
+    /// 安装共享依赖(name: ffmpeg/yt-dlp),自动解析下载源。
+    /// 若系统 PATH 已可用则直接复用,不重复下载。
+    /// 返回缓存中的可执行文件路径。
+    pub async fn ensure_dependency(
+        &self,
+        name: &str,
+        ref_plugin: &str,
+    ) -> Result<PathBuf, String> {
+        // 系统 PATH 已有 → 直接复用,不占用缓存
+        if crate::dep_manifest::dep_available_on_path(name) {
+            return Ok(PathBuf::from(name));
+        }
+
+        let spec = crate::dep_manifest::resolve_dep_spec(name)
+            .ok_or_else(|| format!("Unknown shared dependency: {}", name))?;
+        let platform = crate::dep_manifest::current_platform();
+        let dest = self.install_dependency(
+            &spec.name,
+            "latest",
+            &platform,
+            &spec.url,
+            &spec.sha256,
+            &[ref_plugin],
+        ).await?;
+        Ok(dest.join(spec.binary_name))
+    }
+
+    /// 安装共享依赖(下载 + 引用计数 + registry)。若已缓存则仅递增 refcount。
     pub async fn install_dependency(
         &self,
         name: &str,
@@ -165,6 +193,37 @@ impl DependencyCache {
             }
         }
         Ok(())
+    }
+
+    /// 卸载插件时递减引用计数。不为 0 则保留缓存;为 0 进入孤儿,
+    /// 由 clean_orphans 清理。返回该依赖是否已无引用(可安全删除)。
+    pub async fn decrement_refcount(
+        &self,
+        name: &str,
+        version: &str,
+        platform: &str,
+        plugin_id: &str,
+    ) -> Result<bool, String> {
+        let _lock = self.acquire_lock()?;
+        let mut registry = Registry::load_or_new(&self.registry_path)
+            .map_err(|e| e.to_string())?;
+
+        let entries = self.get_mut_entries(&mut registry, name)?;
+        let mut orphaned = false;
+        if let Some(platforms) = entries.get_mut(version) {
+            if let Some(entry) = platforms.get_mut(platform) {
+                entry.refs.retain(|r| r != plugin_id);
+                if entry.refcount > 0 {
+                    entry.refcount -= 1;
+                }
+                // 该依赖不再被任何插件引用 → 孤儿,可清理
+                if entry.refcount == 0 || entry.refs.is_empty() {
+                    orphaned = true;
+                }
+            }
+        }
+        registry.save(&self.registry_path).map_err(|e| e.to_string())?;
+        Ok(orphaned)
     }
 
     fn get_mut_entries<'a>(

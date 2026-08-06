@@ -107,14 +107,26 @@ impl PluginManager {
                 message: format!("Plugin '{}' not found", plugin_id),
             });
         }
-        
+
+        // 1. Decrement shared-dependency refcounts BEFORE deleting (so refs tracking
+        //    works). Dependencies still referenced by other plugins are preserved.
+        let dc = crate::dependency_cache::DependencyCache::new();
+        if let Ok(Some(manifest)) = self.get_manifest(plugin_id).await {
+            if let Some(deps) = &manifest.dependencies {
+                let platform = crate::dep_manifest::current_platform();
+                for (name, _) in deps {
+                    let _ = dc.decrement_refcount(name, "latest", &platform, plugin_id).await;
+                }
+            }
+        }
+
+        // 2. Remove the plugin directory.
         fs::remove_dir_all(&plugin_dir)
             .map_err(|e| format!("Remove plugin: {}", e))?;
-        
-        // Decrement refcount in dependency cache
-        let dc = crate::dependency_cache::DependencyCache::new();
-        dc.clean_orphans().await.ok();
-        
+
+        // 3. Clean up now-orphaned dependencies (refcount == 0).
+        let _ = dc.clean_orphans().await;
+
         Ok(crate::InstallResult {
             success: true,
             plugin_id: plugin_id.to_string(),
@@ -276,9 +288,11 @@ impl PluginManager {
         let Some(deps) = &manifest.dependencies else {
             return;
         };
-        for (name, constraint) in deps {
-            // v0.2+: resolve version from semver constraint; for now log the intent.
-            log::info!("Plugin {} needs dependency {} ({}) — dependency fetching in v0.2", plugin_id, name, constraint);
+        let dc = crate::dependency_cache::DependencyCache::new();
+        for (name, _constraint) in deps {
+            if let Err(e) = dc.ensure_dependency(name, plugin_id).await {
+                log::warn!("Install dependency {} for {}: {}", name, plugin_id, e);
+            }
         }
     }
 }

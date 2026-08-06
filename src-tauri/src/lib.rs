@@ -3,6 +3,7 @@ mod manifest_model;
 mod manifest_fetcher;
 mod message_bridge;
 mod protocol;
+mod dep_manifest;
 mod tool_runner;
 mod task_queue;
 mod dependency_cache;
