@@ -33,6 +33,25 @@
     window.addEventListener('message', handler);
     return function() { window.removeEventListener('message', handler); };
   }
+
+  // 接收主程序回发的 plugkit:response,按 id resolve/reject 对应的 invoke Promise。
+  // (修复:原先没有任何地方消费 response,所有 invoke 永远 pending 直到超时)
+  window.addEventListener('message', (e) => {
+    const data = e.data;
+    if (!data || data.type !== CHANNEL + ':response') return;
+    const p = pending.get(data.id);
+    if (!p) return;
+    pending.delete(data.id);
+    if (p.timer) clearTimeout(p.timer);
+    const r = data.result;
+    if (r && typeof r === 'object' && 'Err' in r) {
+      p.reject(new Error(String(r.Err)));
+    } else if (r && typeof r === 'object' && 'Ok' in r) {
+      p.resolve(r.Ok);   // 解包 Rust Result 的 Ok 值
+    } else {
+      p.resolve(r);
+    }
+  });
   
   const MT = {
     invoke: invoke,
