@@ -114,6 +114,18 @@ async fn dispatch(
             let paths = crate::dialog_open_file_inner(app.clone(), exts, multiple).await?;
             Ok(serde_json::json!({ "paths": paths }))
         }
+        // 选择文件夹(更改保存路径)
+        "dialog_open_folder" => {
+            let path = crate::dialog_open_folder_inner(app.clone()).await?;
+            Ok(serde_json::json!({ "path": path }))
+        }
+        // 在系统文件管理器中打开路径
+        "open_in_folder" => {
+            let path = payload.get("path").and_then(|v| v.as_str())
+                .ok_or("Missing 'path'")?;
+            crate::open_in_folder(app.clone(), path.to_string()).await?;
+            Ok(serde_json::json!({ "opened": true }))
+        }
 
         // 兜底:任何未识别的命令名都当作插件 CLI 命令直接调用
         // (插件作者可 MT.invoke('download', {...}) 直观调用 manifest 命令)

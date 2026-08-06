@@ -74,7 +74,15 @@
       // 打开原生文件选择对话框,按扩展名过滤。返回路径数组(取消为空数组)。
       openFile: function(extensions, multiple) {
         return invoke('dialog_open_file', { extensions: extensions || [], multiple: !!multiple });
+      },
+      // 选择文件夹。返回 { path } 或 { path: null }。
+      openFolder: function() {
+        return invoke('dialog_open_folder', {});
       }
+    },
+    // 在系统文件管理器中打开路径(文件夹或文件所在目录)
+    openPath: function(path) {
+      return invoke('open_in_folder', { path: path });
     }
   };
   window.PlugKit = MT;

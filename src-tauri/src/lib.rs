@@ -89,6 +89,38 @@ async fn dialog_open_file(
     dialog_open_file_inner(app, extensions, multiple.unwrap_or(false)).await
 }
 
+/// 选择文件夹(供插件 iframe 调用,如"更改保存路径")。
+/// 返回选中的文件夹路径,取消返回 None。
+pub async fn dialog_open_folder_inner(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app.dialog().file().blocking_pick_folder();
+    Ok(picked.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+async fn dialog_open_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    dialog_open_folder_inner(app).await
+}
+
+/// 在系统文件管理器中打开指定路径(文件夹或文件的所在目录)。
+/// 供插件 iframe 的「打开保存路径」按钮调用。
+#[tauri::command]
+async fn open_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    let target = if p.is_dir() {
+        p
+    } else if let Some(parent) = p.parent() {
+        parent.to_path_buf()
+    } else {
+        p
+    };
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_path(target.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandOutput {
@@ -246,6 +278,8 @@ pub fn run() {
             market_refresh,
             bridge_message,
             dialog_open_file,
+            dialog_open_folder,
+            open_in_folder,
             get_cache_stats,
             clean_orphan_cache,
             get_settings,
