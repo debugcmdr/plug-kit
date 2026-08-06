@@ -266,14 +266,16 @@ impl ToolRunner {
                         result = result.replace(&placeholder, &value_str);
                     }
                 }
+                // 未提供的参数占位符(如 {output_dir} 为空)替换为空,避免字面量残留
+                // 例: --output-dir {output_dir} → --output-dir ""(插件端回退默认路径)
+                result = strip_unfilled_placeholders(&result);
                 result
             })
             .collect()
     }
 
     /// Read stdout line by line, emitting progress events and capturing result/error lines.
-    async fn read_stdout_protocol(
-        reader: impl AsyncRead + Unpin + Send + 'static,
+    async fn read_stdout_protocol(        reader: impl AsyncRead + Unpin + Send + 'static,
         plugin_id: String,
         task_id: String,
         app: Option<tauri::AppHandle>,
@@ -331,4 +333,27 @@ struct ProcessOutcome {
     success: bool,
     code: i32,
     killed: Option<String>,
+}
+
+/// 把字符串里残留的 `{name}` 占位符替换为空(未提供的参数)。
+fn strip_unfilled_placeholders(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            // 找匹配的 }
+            if let Some(close) = s[i + 1..].find('}') {
+                let name = &s[i + 1..i + 1 + close];
+                // 仅当形如 {identifier} 才当作占位符清掉
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    i += close + 2;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }

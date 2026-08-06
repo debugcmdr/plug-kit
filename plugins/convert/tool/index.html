@@ -37,6 +37,12 @@
     .file-list h3 { font-size: 13px; color: #646a73; font-weight: 500; margin-bottom: 8px; }
     .file-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #e8eaef; border-radius: 8px; margin-bottom: 6px; background: #fafbfc; }
     .file-item .fname { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* 保存路径 */
+    .save-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 8px; }
+    .save-row .path { flex: 1; font-size: 13px; color: #1f2329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+    .save-row .sm-btn { background: none; border: 1px solid #d0d3d9; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; }
+    .save-row .sm-btn:hover { background: #f0f5ff; }
     .file-item .fsize { font-size: 11px; color: #a0a4ab; margin-left: 10px; white-space: nowrap; }
     .file-item .fdel { color: #d54941; cursor: pointer; margin-left: 10px; font-size: 16px; line-height: 1; }
     .file-item .fdel:hover { opacity: .7; }
@@ -97,6 +103,14 @@
       </div>
     </div>
 
+    <!-- 保存路径 -->
+    <div class="save-row">
+      <span style="font-size:12px;color:#646a73;">保存到</span>
+      <span class="path" id="savePath">与源文件同目录</span>
+      <button class="sm-btn" id="btnChangeDir">更改</button>
+      <button class="sm-btn" id="btnOpenDir">打开</button>
+    </div>
+
     <button class="btn" id="btnConvert">开始转换</button>
     <div class="bar hidden" id="bar"><div id="barFill" style="width:0%"></div></div>
     <div class="status" id="status">点击「选择文件」添加文件。</div>
@@ -150,6 +164,30 @@
     const CAT_LABEL = { video: '视频', audio: '音频', image: '图片' };
     let currentCat = 'video';
     let selectedFiles = [];  // [{path, name, size}]
+    let saveDir = '';        // 空 = 与源文件同目录
+
+    // ---- 保存路径 ----
+    async function changeDir() {
+      try {
+        const r = await MT.dialog.openFolder();
+        if (r && r.path) {
+          saveDir = r.path;
+          $('savePath').textContent = saveDir;
+          setStatus(`保存路径已改为: ${saveDir}`);
+        }
+      } catch (e) {
+        setStatus('更改路径失败: ' + e, true);
+      }
+    }
+    async function openDir() {
+      try {
+        await MT.openPath(saveDir);
+      } catch (e) {
+        setStatus('打开文件夹失败: ' + e, true);
+      }
+    }
+    $('btnChangeDir').onclick = changeDir;
+    $('btnOpenDir').onclick = openDir;
 
     function setStatus(msg, isErr) {
       const el = $('status');
@@ -249,7 +287,11 @@
           const f = selectedFiles[i];
           setStatus(`(${i + 1}/${selectedFiles.length}) 转换 ${f.name} ...`);
           const dot = f.path.lastIndexOf('.');
-          const output = dot > 0 ? f.path.slice(0, dot) + '.' + fmt : f.path + '.' + fmt;
+          const base = dot > 0 ? f.path.slice(0, dot) : f.path;
+          // 输出路径:设了保存目录则输出到该目录,否则与源同目录
+          const output = saveDir
+            ? saveDir + '/' + (base.split('/').pop() || '') + '.' + fmt
+            : base + '.' + fmt;
           try {
             const r = await MT.invoke('convert', { input: f.path, output, preset, quality, audio_bitrate: undefined });
             okCount++;
@@ -259,7 +301,7 @@
           }
         }
         setStatus(okCount > 0
-          ? `✅ 完成:${okCount} 成功${failCount ? ', ' + failCount + ' 失败' : ''}。已转格式与源文件同目录。`
+          ? `✅ 完成:${okCount} 成功${failCount ? ', ' + failCount + ' 失败' : ''}。已保存到 ${saveDir || '源文件目录'}。`
           : `❌ 全部失败(${failCount} 个)`, failCount > 0 && okCount === 0);
       } finally {
         $('btnConvert').disabled = false;
