@@ -107,8 +107,12 @@ impl TaskQueue {
         }
     }
 
-    /// Cancel a task (marks it Cancelled; the running subprocess is killed by ToolRunner).
+    /// Cancel a task: mark Cancelled AND request the running subprocess be killed
+    /// via the global task registry (fixes cancel that only changed status).
     pub async fn cancel(task_id: &str) {
+        // 通知 ToolRunner 杀子进程(若该任务正在运行)
+        let _ = crate::task_registry::request_cancel(task_id).await;
+
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
             task.status = TaskStatus::Cancelled;

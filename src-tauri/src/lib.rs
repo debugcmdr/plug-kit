@@ -7,6 +7,7 @@ mod preinstall;
 mod dep_manifest;
 mod tool_runner;
 mod task_queue;
+mod task_registry;
 mod dependency_cache;
 mod plugin_manager;
 mod config_mgr;

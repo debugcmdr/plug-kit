@@ -71,8 +71,6 @@ impl ToolRunner {
         let exe = Self::find_executable(&plugin_dir.join(manifest.tool_dir()), &manifest)?;
         let args = self.substitute_args(&command.stdin_args, &params, &manifest);
 
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-
         // 解析共享依赖真实路径(缓存优先;ffmpeg 系统 PATH 优先)
         let dep_envs = self.resolve_dependency_envs(plugin_id, &manifest).await;
 
@@ -90,6 +88,8 @@ impl ToolRunner {
         let stderr = child.stderr.take().ok_or("Failed to take stderr")?;
 
         let task_id = uuid::Uuid::new_v4().to_string();
+        // 注册到全局任务注册表:任务中心可真正取消(杀子进程)
+        let cancel_flag = crate::task_registry::register(&task_id).await;
         let cancel = cancel_flag.clone();
         let app_clone = app.map(|a| a.clone());
 
@@ -113,12 +113,14 @@ impl ToolRunner {
             let _ = child.kill().await;
             let _ = stdout_task.await;
             let _ = stderr_task.await;
+            crate::task_registry::unregister(&task_id).await;
             return Err(flag);
         }
 
         let (stdout_res, stderr_res) = tokio::join!(stdout_task, stderr_task);
         let lines = stdout_res.map_err(|e| format!("stdout task failed: {}", e))?;
         let _stderr = stderr_res.map_err(|e| format!("stderr task failed: {}", e))?;
+        crate::task_registry::unregister(&task_id).await;
 
         if !outcome.success && !lines.iter().any(|l| l.contains("\"type\":\"error\"")) {
             return Err(format!("Plugin exited with code {}", outcome.code));
