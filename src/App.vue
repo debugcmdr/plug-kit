@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
 
 const activePlugin = ref<string | null>(null)
+let unlistenProgress: UnlistenFn | null = null
 
 function selectPlugin(target: string) {
   activePlugin.value = target
@@ -13,13 +14,20 @@ function selectPlugin(target: string) {
 
 // 转发 Tauri 进度事件(plugkit:task-progress)给对应插件 iframe,
 // 以 plugkit:progress postMessage 类型送达(bridge.js onProgress 监听它)。
-listen('plugkit:task-progress', (event: any) => {
-  const { plugin_id, data } = event.payload || {}
-  if (!plugin_id) return
-  const iframe = document.querySelector(
-    `iframe[data-plugin-id="${plugin_id}"]`
-  ) as HTMLIFrameElement | null
-  iframe?.contentWindow?.postMessage({ type: 'plugkit:progress', data }, '*')
+// 用 onMounted + await:确保 Tauri IPC 就绪后再注册监听(顶层调用可能时序错乱)。
+onMounted(async () => {
+  unlistenProgress = await listen('plugkit:task-progress', (event: any) => {
+    const { plugin_id, data } = event.payload || {}
+    if (!plugin_id) return
+    const iframe = document.querySelector(
+      `iframe[data-plugin-id="${plugin_id}"]`
+    ) as HTMLIFrameElement | null
+    iframe?.contentWindow?.postMessage({ type: 'plugkit:progress', data }, '*')
+  })
+})
+
+onUnmounted(() => {
+  unlistenProgress?.()
 })
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}
