@@ -233,10 +233,17 @@ def download(url, category, quality, output_dir, extra=""):
             result({"output_dir": output_dir, "files": files, "category": category})
 
     else:
-        # 视频:按清晰度选择
+        # 视频:按清晰度选择。quality 可能是 "best" / "2160p" / "未知清晰度" 等标签。
         if quality and quality != "best":
             h = re.sub(r"\D", "", quality)
-            fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+            if h and int(h) > 0:
+                # 有效高度 → 选对应清晰度
+                fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+            else:
+                # 无法解析高度(如"未知清晰度"/纯字母)→ 回退 best,避免无效 selector
+                log_warn = "清晰度无法识别,使用最佳画质"
+                progress(5, message=log_warn)
+                fmt = "bestvideo+bestaudio/best"
         else:
             fmt = "bestvideo+bestaudio/best"
         cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
