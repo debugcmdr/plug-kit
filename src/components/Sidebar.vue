@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { PluginInfo } from '../types'
+import { installedVersion } from '../stores/plugins'
 
 const emit = defineEmits<{
   select: [pluginId: string]
@@ -22,6 +23,9 @@ async function loadInstalled() {
 }
 
 onMounted(loadInstalled)
+
+// 安装/卸载插件后自动刷新侧边栏
+watch(installedVersion, loadInstalled)
 
 const filteredPlugins = () => {
   if (!searchQuery.value) return plugins.value

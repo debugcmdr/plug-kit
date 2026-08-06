@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { PluginInfo, InstallResult } from '../types'
+import type { PluginInfo } from '../types'
 import { useMessage, useDialog } from 'naive-ui'
+import { installPlugin as installFromStore, uninstallPlugin as uninstallFromStore } from '../stores/plugins'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -26,12 +27,8 @@ async function fetchPlugins() {
 async function installPlugin(plugin: PluginInfo) {
   message.info(`正在安装 ${plugin.name}...`)
   try {
-    const r = await invoke<InstallResult>('install_plugin', { pluginId: plugin.id })
-    if (r.success) {
-      message.success(r.message)
-    } else {
-      message.error(r.message)
-    }
+    const r = await installFromStore(plugin.id)
+    r.success ? message.success(r.message) : message.error(r.message)
     await fetchPlugins()
   } catch (e) {
     message.error(`安装失败: ${e}`)
@@ -46,7 +43,7 @@ function confirmUninstall(plugin: PluginInfo) {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        const r = await invoke<InstallResult>('uninstall_plugin', { pluginId: plugin.id })
+        const r = await uninstallFromStore(plugin.id)
         r.success ? message.success(r.message) : message.error(r.message)
         await fetchPlugins()
       } catch (e) {
