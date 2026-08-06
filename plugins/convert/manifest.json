@@ -1,11 +1,11 @@
 {
   "id": "convert",
-  "name": "视频格式转换",
-  "version": "0.1.0",
-  "description": "ffmpeg 视频/音频格式转换、压缩、参数调整",
+  "name": "格式转换",
+  "version": "0.2.0",
+  "description": "视频 / 音频 / 图片格式转换(基于 ffmpeg)",
   "author": "plug-kit",
   "category": "media",
-  "tags": ["video", "convert", "ffmpeg"],
+  "tags": ["video", "audio", "image", "convert", "ffmpeg"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
     "ffmpeg": ">=6.0"
@@ -17,10 +17,14 @@
     "toolDir": "tool"
   },
   "commands": {
+    "probe": {
+      "stdinArgs": ["probe"],
+      "output": "json"
+    },
     "convert": {
-      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--preset", "{preset}", "--audio-bitrate", "{audio_bitrate}"],
+      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--preset", "{preset}", "--quality", "{quality}", "--audio-bitrate", "{audio_bitrate}"],
       "output": "progress+json"
     }
   },
-  "releaseUrl": "https://github.com/plug-kit/plugkit-convert/releases/latest"
+  "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest"
 }

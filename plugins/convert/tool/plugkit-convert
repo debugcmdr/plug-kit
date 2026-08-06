@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""plugkit-convert - 视频格式转换插件(基于 ffmpeg)"""
+"""plugkit-convert - 格式转换工具(基于 ffmpeg)
+
+三大类转换:
+- 视频: mp4 / mkv / mov / webm / avi / gif(视频转 gif)
+- 音频: mp3 / m4a / wav / flac / ogg
+- 图片: jpg / png / webp / heic
+"""
 import json
 import os
 import re
@@ -30,6 +36,11 @@ def dep(name):
 
 
 FFMPEG = dep("ffmpeg")
+FFPROBE = dep("ffprobe")
+
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".ogv", ".3gp"}
+AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".wma", ".aiff"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tiff"}
 
 
 def parse_args(argv):
@@ -38,7 +49,7 @@ def parse_args(argv):
     while i < len(argv):
         a = argv[i]
         if a.startswith("--"):
-            key = a[2:].split("=")[0]
+            key = a[2:].split("=")[0].replace("-", "_")
             if "=" in a:
                 args[key] = a.split("=", 1)[1]
             elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
@@ -50,11 +61,23 @@ def parse_args(argv):
     return args
 
 
+def detect_category(path):
+    """按扩展名判断输入媒体类别。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in IMAGE_EXTS:
+        return "image"
+    return "unknown"
+
+
 def probe_duration(path):
-    """用 ffprobe 获取时长(秒),用于进度计算。"""
+    """ffprobe 获取时长(秒),用于进度计算。"""
     try:
         proc = subprocess.run(
-            [dep("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
              "-of", "json", path],
             capture_output=True, text=True, timeout=15,
         )
@@ -64,40 +87,17 @@ def probe_duration(path):
         return 0
 
 
-def convert(input_path, output_path, preset="fast", audio_bitrate=None):
-    """转换视频格式。"""
-    if not os.path.exists(input_path):
-        error("INPUT_MISSING", f"输入文件不存在: {input_path}")
-        return
-
-    duration = probe_duration(input_path)
-    progress(0, message=f"开始转换 {os.path.basename(input_path)}...")
-
-    cmd = [FFMPEG, "-y", "-i", input_path]
-    # 预设:fast/medium/slow 对应 libx264 preset
-    preset_map = {"fast": "fast", "medium": "medium", "slow": "slow"}
-    if output_path.endswith((".mp4", ".mkv", ".mov")):
-        cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium")]
-        if audio_bitrate:
-            cmd += ["-c:a", "aac", "-b:a", audio_bitrate]
-        else:
-            cmd += ["-c:a", "aac"]
-    elif output_path.endswith(".webm"):
-        cmd += ["-c:v", "libvpx-vp9", "-c:a", "libopus"]
-    else:
-        cmd += ["-c:v", "copy", "-c:a", "copy"]
-    cmd.append(output_path)
-
+def run_with_progress(cmd, duration, label):
+    """执行 ffmpeg,流式解析 time= 进度。"""
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
     except FileNotFoundError:
-        error("FFMPEG_MISSING", "未找到 ffmpeg,请先在主程序安装共享依赖")
-        return
+        error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
+        return None
 
-    # 解析 ffmpeg 的 time= 进度
     last_pct = 0
     for line in proc.stdout:
         m = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
@@ -105,37 +105,190 @@ def convert(input_path, output_path, preset="fast", audio_bitrate=None):
             elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
             pct = min(99.0, (elapsed / duration) * 100)
             if pct - last_pct >= 1:
-                progress(pct, message=f"转换中 {pct:.0f}%")
+                progress(pct, message=f"{label} {pct:.0f}%")
                 last_pct = pct
-        elif "error" in line.lower() and "duration" not in line.lower():
-            pass  # 不把 ffmpeg 普通 stderr 当错误
 
     proc.wait()
     if proc.returncode != 0:
         error("FFMPEG_ERROR", f"ffmpeg 转换失败(退出码 {proc.returncode})")
-        return
+        return None
+    return True
 
+
+# ---------------------------------------------------------------- 视频转换
+def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None):
+    duration = probe_duration(input_path)
+    progress(0, message=f"开始转换视频 {os.path.basename(input_path)}...")
+
+    ext = os.path.splitext(output_path)[1].lower()
+    preset_map = {"fast": "veryfast", "medium": "medium", "slow": "slow"}
+
+    # 视频转 GIF
+    if ext == ".gif":
+        cmd = [FFMPEG, "-y", "-i", input_path,
+               "-vf", "fps=10,scale=480:-1:flags=lanczos", "-loop", "0"]
+        cmd.append(output_path)
+    elif ext == ".webm":
+        cmd = [FFMPEG, "-y", "-i", input_path,
+               "-c:v", "libvpx-vp9", "-preset", preset_map.get(preset, "medium"),
+               "-b:v", "0", "-crf", crf or "32", "-c:a", "libopus", "-b:a", audio_bitrate or "96k"]
+        cmd.append(output_path)
+    elif ext == ".mp4":
+        cmd = [FFMPEG, "-y", "-i", input_path,
+               "-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
+               "-crf", crf or "23", "-pix_fmt", "yuv420p", "-c:a", "aac",
+               "-b:a", audio_bitrate or "128k"]
+        cmd.append(output_path)
+    else:
+        # mkv / mov / avi / m4v / ts 等:容器重封装或标准编码
+        cmd = [FFMPEG, "-y", "-i", input_path]
+        if ext == ".avi":
+            cmd += ["-c:v", "libx264", "-crf", crf or "23", "-c:a", "aac"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
+                    "-crf", crf or "23", "-c:a", "aac"]
+        cmd.append(output_path)
+
+    ok = run_with_progress(cmd, duration, "转换中")
+    if ok is None:
+        return
     progress(100, message="转换完成")
     result({
+        "category": "video",
         "input": input_path,
         "output": output_path,
         "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
     })
 
 
+# ---------------------------------------------------------------- 音频转换
+def convert_audio(input_path, output_path, audio_bitrate=None):
+    duration = probe_duration(input_path)
+    progress(0, message=f"开始转换音频 {os.path.basename(input_path)}...")
+
+    ext = os.path.splitext(output_path)[1].lower()
+    codec_map = {
+        ".mp3": "libmp3lame", ".m4a": "aac", ".wav": "pcm_s16le",
+        ".flac": "flac", ".ogg": "libvorbis", ".aac": "aac",
+        ".wma": "wmav2", ".aiff": "pcm_s16be",
+    }
+    codec = codec_map.get(ext, "libmp3lame")
+
+    cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", codec]
+    if ext == ".mp3":
+        cmd += ["-b:a", audio_bitrate or "192k"]
+    elif ext == ".m4a":
+        cmd += ["-b:a", audio_bitrate or "192k"]
+    elif ext == ".wav":
+        cmd += ["-ar", "44100"]
+    cmd.append(output_path)
+
+    ok = run_with_progress(cmd, duration, "转换中")
+    if ok is None:
+        return
+    progress(100, message="转换完成")
+    result({
+        "category": "audio",
+        "input": input_path,
+        "output": output_path,
+        "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+    })
+
+
+def has_encoder(name):
+    """检测 ffmpeg 是否有指定编码器。"""
+    try:
+        proc = subprocess.run([FFMPEG, "-hide_banner", "-encoders"],
+                              capture_output=True, text=True, timeout=10)
+        return f" {name} " in f" {proc.stdout} "
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- 图片转换
+def convert_image(input_path, output_path, quality="90"):
+    progress(0, message=f"开始转换图片 {os.path.basename(input_path)}...")
+
+    ext = os.path.splitext(output_path)[1].lower()
+    cmd = [FFMPEG, "-y", "-i", input_path]
+    if ext in (".jpg", ".jpeg"):
+        cmd += ["-q:v", quality, "-qmin", "1"]
+    elif ext == ".webp":
+        if not has_encoder("libwebp"):
+            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libwebp 编码器,无法转 WebP。可用: jpg/png/heic")
+            return
+        cmd += ["-quality", quality]
+    elif ext == ".png":
+        cmd += ["-compression_level", "6"]
+    elif ext == ".heic":
+        if not has_encoder("libx265"):
+            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 HEIC。可用: jpg/png/webp")
+            return
+        cmd += ["-c:v", "libx265", "-tag:v", "hvc1"]
+    cmd.append(output_path)
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
+        return
+    except subprocess.TimeoutExpired:
+        error("TIMEOUT", "图片转换超时")
+        return
+
+    if proc.returncode != 0:
+        error("FFMPEG_ERROR", proc.stderr.strip()[-300:] or "ffmpeg 转换失败")
+        return
+
+    progress(100, message="转换完成")
+    result({
+        "category": "image",
+        "input": input_path,
+        "output": output_path,
+        "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+    })
+
+
+# ---------------------------------------------------------------- 探测
+def probe():
+    """探测输入文件类别 + 支持的目标格式列表。"""
+    result({
+        "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif"],
+        "audio_formats": ["mp3", "m4a", "wav", "flac", "ogg"],
+        "image_formats": ["jpg", "png", "webp", "heic"],
+        "has_ffmpeg": True,
+    })
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
-        result({"usage": "convert.py convert --input FILE --output FILE [--preset fast|medium|slow] [--audio-bitrate 128k]"})
+        result({"usage": "convert <probe|convert> --input FILE --output FILE [--preset fast|medium|slow] [--quality 90] [--audio-bitrate 128k]"})
         return
     cmd = argv[0]
     args = parse_args(argv[1:])
+
     try:
-        if cmd == "convert":
+        if cmd == "probe":
+            probe()
+        elif cmd == "convert":
             if not args.get("input") or not args.get("output"):
                 error("MISSING_ARGS", "需要 --input 和 --output 参数")
                 return
-            convert(args["input"], args["output"], args.get("preset", "fast"), args.get("audio_bitrate"))
+            inp = args["input"]
+            if not os.path.exists(inp):
+                error("INPUT_MISSING", f"输入文件不存在: {inp}")
+                return
+            # 按输出扩展名优先决定转换意图(如 .mp3 输出 → 提取音频)
+            out_ext = os.path.splitext(args["output"])[1].lower()
+            if out_ext in AUDIO_EXTS:
+                convert_audio(inp, args["output"], args.get("audio_bitrate"))
+            elif out_ext in IMAGE_EXTS:
+                convert_image(inp, args["output"], args.get("quality", "90"))
+            else:
+                # 否则按输入类别走视频转换
+                convert_video(inp, args["output"], args.get("preset", "medium"),
+                              args.get("crf"), args.get("audio_bitrate"))
         else:
             error("UNKNOWN_CMD", f"未知命令: {cmd}")
     except Exception as e:

@@ -3,50 +3,69 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>视频格式转换</title>
+  <title>格式转换</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 24px; }
-    .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-    h2 { font-size: 18px; margin-bottom: 16px; }
-    label { display: block; font-size: 13px; color: #646a73; margin: 12px 0 6px; }
+    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    h2 { font-size: 16px; margin-bottom: 4px; }
+    .sub { font-size: 12px; color: #646a73; margin-bottom: 14px; }
+
+    .cats { display: flex; gap: 8px; margin-bottom: 14px; }
+    .cat { flex: 1; text-align: center; padding: 10px 0; border: 1px solid #e0e2e6; border-radius: 8px; cursor: pointer; font-size: 13px; transition: all .15s; }
+    .cat:hover { border-color: #3370ff; }
+    .cat.active { border-color: #3370ff; background: #f0f5ff; color: #3370ff; font-weight: 500; }
+
+    label { display: block; font-size: 12px; color: #646a73; margin: 12px 0 6px; }
     input, select { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; }
     input:focus, select:focus { border-color: #3370ff; }
     .row { display: flex; gap: 12px; }
     .row > div { flex: 1; }
+
     .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; width: 100%; margin-top: 16px; }
     .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
+
     .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; }
+    .status.err { color: #d54941; }
     .bar { height: 6px; background: #e8eaef; border-radius: 3px; margin-top: 12px; overflow: hidden; }
     .bar > div { height: 100%; background: #3370ff; border-radius: 3px; transition: width .3s; }
-    .hint { font-size: 12px; color: #a0a4ab; margin-top: 4px; }
-    .err { color: #d54941; }
+    .hidden { display: none; }
+    .hint { font-size: 11px; color: #a0a4ab; margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>视频格式转换</h2>
-    <p style="font-size:13px; color:#646a73;">基于 ffmpeg 转换视频/音频格式。输入完整路径,选择输出格式。</p>
+    <h2>格式转换</h2>
+    <div class="sub">视频 / 音频 / 图片格式互转,基于 ffmpeg。</div>
+
+    <div class="cats" id="cats">
+      <div class="cat active" data-cat="video">视频</div>
+      <div class="cat" data-cat="audio">音频</div>
+      <div class="cat" data-cat="image">图片</div>
+    </div>
 
     <label>输入文件路径</label>
     <input id="input" placeholder="/Users/name/Videos/input.mp4" />
-    <div class="hint">支持 mp4 / mkv / mov / avi / webm 等</div>
+    <div class="hint">支持拖入路径或手动输入。视频:mp4/mkv/mov/webm/avi/gif · 音频:mp3/m4a/wav/flac/ogg · 图片:jpg/png/webp/heic</div>
 
     <div class="row">
       <div>
         <label>输出格式</label>
-        <select id="format">
-          <option value="mp4">MP4 (H.264 + AAC)</option>
-          <option value="mkv">MKV</option>
-          <option value="mov">MOV</option>
-          <option value="webm">WebM (VP9 + Opus)</option>
+        <select id="format"></select>
+      </div>
+      <div id="optQuality" class="hidden">
+        <label>质量</label>
+        <select id="quality">
+          <option value="90">90 (推荐)</option>
+          <option value="75">75</option>
+          <option value="60">60 (小体积)</option>
         </select>
       </div>
-      <div>
+      <div id="optPreset" class="hidden">
         <label>编码预设</label>
         <select id="preset">
-          <option value="fast">快速 (推荐)</option>
-          <option value="medium">平衡</option>
+          <option value="fast">快速</option>
+          <option value="medium">平衡 (推荐)</option>
           <option value="slow">高质量</option>
         </select>
       </div>
@@ -54,12 +73,20 @@
 
     <button class="btn" id="btnConvert">开始转换</button>
     <div class="bar hidden" id="bar"><div id="barFill" style="width:0%"></div></div>
-    <div class="status" id="status">等待操作...</div>
+    <div class="status" id="status">选择类别和格式,输入文件路径后转换。</div>
   </div>
 
   <script>
     const MT = window.MT || window.PlugKit;
     const $ = (id) => document.getElementById(id);
+
+    const FORMATS = {
+      video: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'gif'],
+      audio: ['mp3', 'm4a', 'wav', 'flac', 'ogg'],
+      image: ['jpg', 'png', 'webp', 'heic'],
+    };
+    const CAT_LABEL = { video: '视频', audio: '音频', image: '图片' };
+    let currentCat = 'video';
 
     function setStatus(msg, isErr) {
       const el = $('status');
@@ -67,15 +94,39 @@
       el.className = 'status' + (isErr ? ' err' : '');
     }
 
+    function renderFormats() {
+      const sel = $('format');
+      sel.innerHTML = '';
+      FORMATS[currentCat].forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f;
+        opt.textContent = f.toUpperCase();
+        sel.appendChild(opt);
+      });
+      // 视频显示预设,图片显示质量
+      $('optPreset').classList.toggle('hidden', currentCat !== 'video');
+      $('optQuality').classList.toggle('hidden', currentCat !== 'image');
+    }
+
+    document.querySelectorAll('.cat').forEach(el => {
+      el.onclick = () => {
+        document.querySelectorAll('.cat').forEach(c => c.classList.remove('active'));
+        el.classList.add('active');
+        currentCat = el.dataset.cat;
+        renderFormats();
+        setStatus(`将${CAT_LABEL[currentCat]}转换。`);
+      };
+    });
+
     async function convert() {
       const input = $('input').value.trim();
       if (!input) { setStatus('请输入输入文件路径', true); return; }
       const fmt = $('format').value;
-      const preset = $('preset').value;
-
-      // 输出路径:同目录,改扩展名
       const dot = input.lastIndexOf('.');
       const output = dot > 0 ? input.slice(0, dot) + '.' + fmt : input + '.' + fmt;
+
+      const preset = $('preset').value;
+      const quality = $('quality').value;
 
       const bar = $('bar'), fill = $('barFill');
       bar.classList.remove('hidden');
@@ -88,8 +139,8 @@
 
       $('btnConvert').disabled = true;
       try {
-        const r = await MT.invoke('convert', { input, output, preset });
-        setStatus(`✅ 转换完成!\n输出: ${r.output}\n大小: ${(r.size / 1024 / 1024).toFixed(2)} MB`);
+        const r = await MT.invoke('convert', { input, output, preset, quality, audio_bitrate: undefined });
+        setStatus(`✅ 转换完成!\n${CAT_LABEL[r.category]}输出: ${r.output}\n大小: ${(r.size / 1024 / 1024).toFixed(2)} MB`);
       } catch (e) {
         setStatus('❌ 转换失败: ' + e, true);
       } finally {
@@ -99,6 +150,7 @@
     }
 
     $('btnConvert').onclick = convert;
+    renderFormats();
   </script>
 </body>
 </html>

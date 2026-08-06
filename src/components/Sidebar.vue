@@ -20,13 +20,7 @@ const CATEGORIES = [
     key: 'convert',
     label: '格式转换',
     icon: 'convert',
-    pluginIds: ['convert', 'audio-extract'],
-  },
-  {
-    key: 'subtitle',
-    label: '文案字幕',
-    icon: 'subtitle',
-    pluginIds: ['subtitle'],
+    pluginIds: ['convert'],
   },
 ]
 
