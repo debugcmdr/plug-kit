@@ -163,7 +163,7 @@
       if (formats.length > 0) {
         html += '<div class="res-section"><h3>视频</h3><table class="fmt-table"><thead><tr><th>清晰度</th><th>格式</th><th>大小</th><th></th></tr></thead><tbody>';
         formats.forEach(f => {
-          html += `<tr><td>${f.label}</td><td>${f.ext}</td><td class="size">${fmtSize(f.size)}</td><td class="pick"><div class="dl-cell"><span class="dl-progress" data-prog></span><span class="dl-check">✓</span><button class="dl-btn" data-action="dl-video" data-idx="${links.indexOf(l)}" data-label="${f.label}">下载</button></div></td></tr>`;
+          html += `<tr><td>${f.label}</td><td>${f.ext}</td><td class="size">${fmtSize(f.size)}</td><td class="pick"><div class="dl-cell" data-action="dl-video" data-idx="${links.indexOf(l)}" data-label="${f.label}"><span class="dl-progress" data-prog></span><span class="dl-check">✓</span><button class="dl-btn">下载</button></div></td></tr>`;
         });
         html += '</tbody></table></div>';
       } else {

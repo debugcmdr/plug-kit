@@ -16,6 +16,7 @@ function selectPlugin(target: string) {
 // 以 plugkit:progress postMessage 类型送达(bridge.js onProgress 监听它)。
 // 用 onMounted + await:确保 Tauri IPC 就绪后再注册监听(顶层调用可能时序错乱)。
 onMounted(async () => {
+  // 转发 Tauri 进度事件给对应插件 iframe(plugkit:progress 供 bridge.js onProgress)
   unlistenProgress = await listen('plugkit:task-progress', (event: any) => {
     const { plugin_id, data } = event.payload || {}
     if (!plugin_id) return
