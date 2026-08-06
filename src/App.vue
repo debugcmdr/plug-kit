@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
 
@@ -9,6 +10,17 @@ const activePlugin = ref<string | null>(null)
 function selectPlugin(target: string) {
   activePlugin.value = target
 }
+
+// 转发 Tauri 进度事件(plugkit:task-progress)给对应插件 iframe,
+// 以 plugkit:progress postMessage 类型送达(bridge.js onProgress 监听它)。
+listen('plugkit:task-progress', (event: any) => {
+  const { plugin_id, data } = event.payload || {}
+  if (!plugin_id) return
+  const iframe = document.querySelector(
+    `iframe[data-plugin-id="${plugin_id}"]`
+  ) as HTMLIFrameElement | null
+  iframe?.contentWindow?.postMessage({ type: 'plugkit:progress', data }, '*')
+})
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}
 // here; we forward to the Tauri bridge_message command (pure pass-through, no
