@@ -13,7 +13,8 @@ function selectPlugin(target: string) {
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}
 // here; we forward to the Tauri bridge_message command (pure pass-through, no
-// business logic in Vue), then relay the response back to the originating iframe.
+// business logic in Vue), then relay the response back to the ORIGINATING iframe
+// (matched by data-plugin-id — multiple plugin iframes stay mounted now).
 window.addEventListener('message', (e) => {
   if (e.data?.type !== 'plugkit:invoke') return
   const { id, command, payload } = e.data
@@ -22,14 +23,18 @@ window.addEventListener('message', (e) => {
 
   invoke('bridge_message', { pluginId: source, msg: { id, command, payload } })
     .then((res: any) => {
-      const iframe = document.querySelector('iframe[data-plugin]') as HTMLIFrameElement | null
+      const iframe = document.querySelector(
+        `iframe[data-plugin-id="${source}"]`
+      ) as HTMLIFrameElement | null
       iframe?.contentWindow?.postMessage(
         { type: 'plugkit:response', id: res.id, result: res.result },
         '*'
       )
     })
     .catch((err: any) => {
-      const iframe = document.querySelector('iframe[data-plugin]') as HTMLIFrameElement | null
+      const iframe = document.querySelector(
+        `iframe[data-plugin-id="${source}"]`
+      ) as HTMLIFrameElement | null
       iframe?.contentWindow?.postMessage(
         { type: 'plugkit:response', id, result: { Err: String(err) } },
         '*'

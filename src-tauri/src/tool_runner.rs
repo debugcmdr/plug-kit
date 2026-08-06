@@ -68,7 +68,7 @@ impl ToolRunner {
         let command = manifest.commands.get(command_name)
             .ok_or_else(|| format!("Command '{}' not found in manifest", command_name))?;
 
-        let exe = Self::find_executable(&plugin_dir.join(manifest.tool_dir()))?;
+        let exe = Self::find_executable(&plugin_dir.join(manifest.tool_dir()), &manifest)?;
         let args = self.substitute_args(&command.stdin_args, &params, &manifest);
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -196,21 +196,34 @@ impl ToolRunner {
         envs
     }
 
-    fn find_executable(tool_dir: &PathBuf) -> Result<PathBuf, String> {
+    /// 定位插件可执行文件。优先用 manifest 的 entry.executable 精确定位;
+    /// 找不到时回退到 tool_dir 下第一个"看起来可执行"的文件。
+    /// (修复:原先盲扫第一个非 exe/dll 文件会把 index.html 当可执行文件)
+    fn find_executable(tool_dir: &PathBuf, manifest: &crate::manifest_model::Manifest) -> Result<PathBuf, String> {
+        // 1. 优先按 manifest 指定名
+        let declared = tool_dir.join(&manifest.entry.executable);
+        if declared.exists() && declared.is_file() {
+            return Ok(declared);
+        }
+
+        // 2. 回退:找第一个可执行(跳过 html/js/css 等非可执行扩展名)
         for entry in std::fs::read_dir(tool_dir).map_err(|e| format!("Read tool dir: {}", e))? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext != "exe" && ext != "dll" {
-                        return Ok(path);
-                    }
-                } else if cfg!(target_os = "windows") {
-                    return Ok(path);
-                } else if !path.to_string_lossy().contains('.') {
-                    return Ok(path);
+            if !path.is_file() { continue; }
+            let ext = path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+            // 跳过明显的非可执行文件
+            if let Some(e) = &ext {
+                if matches!(e.as_str(), "html" | "htm" | "js" | "css" | "json" | "txt" | "md" | "svg") {
+                    continue;
                 }
+                if e == "exe" || e == "dll" { continue; }
             }
+            // 无扩展名(macOS/linux 可执行惯例)优先
+            if ext.is_none() && !path.to_string_lossy().contains('.') {
+                return Ok(path);
+            }
+            return Ok(path);
         }
         Err("No executable found in tool directory".to_string())
     }

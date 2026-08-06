@@ -42,6 +42,7 @@ onMounted(async () => {
       <iframe
         v-if="!loadError"
         :src="iframeSrc"
+        :data-plugin-id="props.pluginId"
         data-plugin
         style="width: 100%; height: 100%; border: none;"
         sandbox="allow-scripts allow-same-origin allow-forms"

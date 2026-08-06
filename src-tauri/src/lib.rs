@@ -22,6 +22,7 @@ pub mod api {
     pub use crate::manifest_model::{Manifest, CommandDefinition};
     pub use crate::security::{validate_unzip_path, validate_sha256};
     pub use crate::plugin_manager::PluginManager;
+    pub use crate::tool_runner::ToolRunner;
 }
 
 use serde::{Deserialize, Serialize};
