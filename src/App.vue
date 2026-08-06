@@ -46,7 +46,7 @@ window.addEventListener('message', (e) => {
           <Sidebar @select="selectPlugin" />
           <n-layout>
             <n-layout-content style="padding: 16px;">
-              <MainContent :active-plugin="activePlugin" />
+              <MainContent :active-plugin="activePlugin" @update:active-plugin="selectPlugin" />
             </n-layout-content>
             <TaskBar />
           </n-layout>
