@@ -115,7 +115,14 @@ async fn dispatch(
             Ok(serde_json::json!({ "paths": paths }))
         }
 
-        other => Err(format!("Unknown bridge command: {}", other)),
+        // 兜底:任何未识别的命令名都当作插件 CLI 命令直接调用
+        // (插件作者可 MT.invoke('download', {...}) 直观调用 manifest 命令)
+        other => {
+            let params = payload.get("params").cloned()
+                .unwrap_or_else(|| payload.clone());
+            let runner = crate::tool_runner::ToolRunner::new();
+            runner.invoke(plugin_id, other, params, Some(app)).await
+        }
     }
 }
 
