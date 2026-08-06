@@ -36,7 +36,9 @@ impl PluginManager {
             None => {
                 // Local reinstall (plugin already on disk): reuse its manifest.
                 let manifest = self.fetch_manifest(plugin_id).await?;
-                (manifest.binary_url.clone(), manifest.expected_sha256.clone())
+                let url = manifest.binary_url.clone()
+                    .ok_or_else(|| "本地插件未配置 binaryUrl,无法重装".to_string())?;
+                (url, manifest.expected_sha256.clone())
             }
         };
 

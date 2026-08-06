@@ -27,16 +27,26 @@ pub struct Manifest {
     pub min_app_version: Option<String>,
     #[serde(default, rename = "expectedSha256")]
     pub expected_sha256: Option<String>,
-    #[serde(rename = "binaryUrl")]
-    pub binary_url: String,
+    // binaryUrl 属于市场清单(ManifestSummary),运行时 manifest 不含此项
+    #[serde(default, rename = "binaryUrl")]
+    pub binary_url: Option<String>,
     pub entry: ManifestEntry,
     pub commands: std::collections::HashMap<String, CommandDefinition>,
-    pub ui: UiDefinition,
+    #[serde(default)]
+    pub ui: Option<UiDefinition>,
     #[serde(rename = "releaseUrl")]
     pub release_url: Option<String>,
 }
 
+impl Manifest {
+    /// Whether the plugin ships an iframe UI.
+    pub fn has_ui(&self) -> bool {
+        self.ui.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
@@ -50,6 +60,7 @@ fn default_tool_dir() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandDefinition {
     pub stdin_args: Vec<String>,
     #[serde(rename = "output")]

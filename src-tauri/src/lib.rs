@@ -17,7 +17,7 @@ pub mod api {
     pub use crate::manifest_fetcher::{download_with_fallback, fetch_market_manifests, bundled_manifests};
     pub use crate::dependency_cache::DependencyCache;
     pub use crate::config_mgr::ConfigMgr;
-    pub use crate::manifest_model::Manifest;
+    pub use crate::manifest_model::{Manifest, CommandDefinition};
 }
 
 use serde::{Deserialize, Serialize};
