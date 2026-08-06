@@ -18,6 +18,7 @@ pub mod api {
     pub use crate::dependency_cache::DependencyCache;
     pub use crate::config_mgr::ConfigMgr;
     pub use crate::manifest_model::{Manifest, CommandDefinition};
+    pub use crate::security::{validate_unzip_path, validate_sha256};
 }
 
 use serde::{Deserialize, Serialize};

@@ -18,10 +18,11 @@ pub enum SecurityError {
 }
 
 pub fn validate_unzip_path(base: &Path, entry_path: &Path) -> Result<PathBuf, SecurityError> {
-    // Lexical validation first: reject absolute paths and any `..` component.
-    // Do NOT rely on canonicalize() here — the extraction target directory often
-    // does not exist yet, so canonicalize would fail and block every install.
-    let normalized = normalize_join(base, entry_path)?;
+    // `entry_path` is the FULL target path (base.join(zip_entry_name)), which is
+    // absolute. Lexically normalize it (resolve `.`/`..`) WITHOUT touching the FS
+    // — the extraction target dir often doesn't exist yet, so canonicalize would
+    // fail and block every install. Then require the result stays under `base`.
+    let normalized = normalize_absolute(entry_path)?;
     if !normalized.starts_with(base) {
         return Err(SecurityError::ZipSlip(format!(
             "Path traversal: {:?} not under {:?}",
@@ -31,35 +32,30 @@ pub fn validate_unzip_path(base: &Path, entry_path: &Path) -> Result<PathBuf, Se
     Ok(normalized)
 }
 
-/// Lexically join `entry` onto `base` and normalize `.` / `..` components.
-/// Rejects absolute `entry` paths and any escape above `base`.
-fn normalize_join(base: &Path, entry: &Path) -> Result<PathBuf, SecurityError> {
-    if entry.is_absolute() {
-        return Err(SecurityError::ZipSlip(format!(
-            "Absolute path in archive entry: {:?}",
-            entry
-        )));
-    }
-
-    let mut components = Vec::new();
-    for comp in entry.components() {
+/// Lexically normalize an absolute-or-relative path, resolving `.` / `..`
+/// components. Rejects `..` that would escape above the anchor (root for
+/// absolute paths, empty for relative).
+fn normalize_absolute(path: &Path) -> Result<PathBuf, SecurityError> {
+    let mut result = PathBuf::new();
+    let mut anchored = false; // saw RootDir => `..` at root is a no-op, not an escape
+    for comp in path.components() {
         match comp {
-            std::path::Component::ParentDir => {
-                if components.pop().is_none() {
-                    return Err(SecurityError::ZipSlip(format!(
-                        "Path escapes base via '..': {:?}",
-                        entry
-                    )));
-                }
+            std::path::Component::RootDir => {
+                result.push(std::path::MAIN_SEPARATOR.to_string());
+                anchored = true;
             }
             std::path::Component::CurDir => {}
-            other => components.push(other.as_os_str().to_os_string()),
+            std::path::Component::ParentDir => {
+                if !result.pop() && !anchored {
+                    return Err(SecurityError::ZipSlip(format!(
+                        "Path escapes via '..': {:?}",
+                        path
+                    )));
+                }
+                // If anchored (absolute), pop() at root just stays at root.
+            }
+            other => result.push(other.as_os_str()),
         }
-    }
-
-    let mut result = base.to_path_buf();
-    for comp in components {
-        result.push(comp);
     }
     Ok(result)
 }

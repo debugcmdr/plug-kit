@@ -194,17 +194,35 @@ impl PluginManager {
         let cursor = Cursor::new(bytes);
         let mut archive = ZipArchive::new(cursor)
             .map_err(|e| format!("Invalid zip: {}", e))?;
-        
+
+        // Determine a single common top-level directory to strip (many archives
+        // wrap their contents in a folder, e.g. `convert/manifest.json`). If all
+        // entries share the same first path component, strip it so the plugin
+        // root ends up directly under `dest`.
+        let strip_prefix = common_top_dir(&mut archive);
+        // 需要带尾斜杠的 prefix 才能正确剥离 `convert/manifest.json` -> `manifest.json`
+        let strip_with_slash = strip_prefix.as_ref().map(|p| format!("{}/", p));
+
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)
                 .map_err(|e| e.to_string())?;
-            
-            let outpath = dest.join(file.name());
-            
-            // Validate path (Zip-Slip prevention)
+
+            let raw_name = file.name().trim_end_matches('/');
+            let entry_rel = match &strip_with_slash {
+                Some(prefix) => raw_name.strip_prefix(prefix.as_str()).unwrap_or(raw_name),
+                None => raw_name,
+            };
+            // Defensive: reject any residual traversal / absolute in the name.
+            if entry_rel.starts_with('/') || entry_rel.split('/').any(|c| c == "..") {
+                return Err(format!("Zip-Slip: unsafe entry '{}'", file.name()));
+            }
+
+            let outpath = dest.join(entry_rel);
+
+            // Validate path (Zip-Slip prevention).
             crate::security::validate_unzip_path(dest, &outpath)
                 .map_err(|e| e.to_string())?;
-            
+
             if file.name().ends_with('/') {
                 fs::create_dir_all(&outpath)
                     .map_err(|e| e.to_string())?;
@@ -248,9 +266,7 @@ impl PluginManager {
             crate::security::validate_unzip_path(base, path)?;
         }
         Ok(())
-    }
-
-    /// Install any shared dependencies declared in the plugin manifest.
+    }    /// Install any shared dependencies declared in the plugin manifest.
     /// Shared deps (ffmpeg/yt-dlp) are cached in ~/.plugkit/cache/deps and injected
     /// into the subprocess via PLUGKIT_FFMPEG / PLUGKIT_YTDLP env vars at runtime.
     async fn install_dependencies(&self, plugin_id: &str) {
@@ -265,6 +281,32 @@ impl PluginManager {
             log::info!("Plugin {} needs dependency {} ({}) — dependency fetching in v0.2", plugin_id, name, constraint);
         }
     }
+}
+
+/// If every entry in the archive shares the same first path component (a common
+/// top-level folder, e.g. `convert/manifest.json` + `convert/tool/...`), return
+/// that prefix so it can be stripped during extraction. Returns None when there
+/// is no single common top dir (files at archive root, or mixed roots).
+fn common_top_dir(archive: &mut zip::ZipArchive<Cursor<&[u8]>>) -> Option<String> {
+    let mut common: Option<String> = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).ok()?;
+        let name = entry.name().trim_end_matches('/');
+        if name.is_empty() {
+            continue;
+        }
+        let top = name.split('/').next().unwrap_or("");
+        // __MACOSX 是 macOS zip 的元数据目录,跳过
+        if top == "__MACOSX" {
+            continue;
+        }
+        match &common {
+            None => common = Some(top.to_string()),
+            Some(existing) if existing == top => {}
+            Some(_) => return None,
+        }
+    }
+    common
 }
 
 /// Current platform string used for `{platform}` placeholder replacement.
