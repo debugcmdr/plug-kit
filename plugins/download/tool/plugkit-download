@@ -67,6 +67,41 @@ def parse_args(argv):
     return args
 
 
+# 常见 yt-dlp 错误 → 人类可读原因
+def diagnose_ytdlp_error(err_lines, last_lines, code):
+    """根据错误行/最后几行,推断失败原因,给出可操作提示。"""
+    all_text = " ".join(err_lines + last_lines)
+
+    # 各平台常见失败模式
+    if any(k in all_text.lower() for k in ["cookies", "cookie", "logged in", "fresh cookies", "login required", "sign in"]):
+        return f"需要登录或 cookies(平台反爬)。可导入浏览器 cookies 后重试。(yt-dlp 退出码 {code})"
+    if "js runtime" in all_text.lower() or "javascript runtime" in all_text.lower():
+        return f"该平台需要 JS 运行时(deno)才能完整解析,当前未安装。安装 deno 后重试。(yt-dlp 退出码 {code})"
+    if "drm" in all_text.lower() or "encrypted" in all_text.lower():
+        return f"该视频受 DRM 加密保护,无法下载。(yt-dlp 退出码 {code})"
+    if "private" in all_text.lower() or "members only" in all_text.lower() or "age restricted" in all_text.lower() or "age-restricted" in all_text.lower() or "this video is private" in all_text.lower():
+        return f"该视频为私密/会员专属/年龄限制,无法访问。(yt-dlp 退出码 {code})"
+    if "geo" in all_text.lower() or "not available in your country" in all_text.lower():
+        return f"该视频在你的地区不可用(地区限制)。(yt-dlp 退出码 {code})"
+    if "requested format" in all_text.lower() or "no video formats" in all_text.lower() or "no format" in all_text.lower() or "unable to download video" in all_text.lower():
+        return f"没有可用的视频格式(可能是直播结束/源站格式变化)。可尝试其它清晰度。(yt-dlp 退出码 {code})"
+    if "http error 403" in all_text.lower() or "403" in all_text.lower():
+        return f"平台拒绝访问(403,反爬)。可能需要 cookies 或稍后重试。(yt-dlp 退出码 {code})"
+    if "http error 404" in all_text.lower() or "404" in all_text.lower():
+        return f"资源不存在或链接失效(404)。(yt-dlp 退出码 {code})"
+    if "network" in all_text.lower() or "timed out" in all_text.lower() or "timeout" in all_text.lower():
+        return f"网络超时或连接失败,请检查网络后重试。(yt-dlp 退出码 {code})"
+    if "unsupported url" in all_text.lower() or "unsupported" in all_text.lower():
+        return f"不支持的链接或站点(yt-dlp 未内置该站解析器)。(yt-dlp 退出码 {code})"
+    if "ffmpeg" in all_text.lower() or "postprocessing" in all_text.lower():
+        return f"合并/后处理失败(可能需要 ffmpeg 或磁盘空间不足)。(yt-dlp 退出码 {code})"
+
+    # 兜底:返回最近一行原始错误
+    last_err = next((l for l in reversed(last_lines) if l and not l.startswith("[download]")), "")
+    detail = last_err[-200:] if last_err else ""
+    return f"下载失败(yt-dlp 退出码 {code}){(':' + detail) if detail else ''}"
+
+
 # ---------------------------------------------------------------- 提取信息
 def info(url):
     """提取资源信息:标题、分类可用格式列表(清晰度/大小)。"""
@@ -82,7 +117,7 @@ def info(url):
         return
     if proc.returncode != 0:
         err = proc.stderr.strip()[-400:]
-        error("YTDLP_ERROR", err or "yt-dlp 提取失败")
+        error("YTDLP_ERROR", diagnose_ytdlp_error([err], [err], proc.returncode))
         return
     try:
         meta = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -141,7 +176,8 @@ def info(url):
 
 # ---------------------------------------------------------------- 下载
 def _run_ytdlp(cmd, url, suffix=""):
-    """执行 yt-dlp,流式解析进度并输出。返回 (ok, files)。"""
+    """执行 yt-dlp,流式解析进度并输出。返回 (ok, files)。
+    失败时给出真实原因(cookies/JS运行时/格式/网络等),而非笼统退出码。"""
     os.makedirs(os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else ".", exist_ok=True)
     progress(0, message=f"准备下载{suffix}...")
     try:
@@ -157,10 +193,16 @@ def _run_ytdlp(cmd, url, suffix=""):
         return False, []
 
     out_dir = None
+    err_lines = []          # 收集错误上下文
+    last_lines = []         # 保留最后几行(下载完成后错误常在末尾)
     for line in proc.stdout:
         line = line.strip()
         if not line:
             continue
+        # 保留最近 8 行,用于失败时诊断
+        last_lines.append(line)
+        if len(last_lines) > 8:
+            last_lines.pop(0)
         m = re.search(r"\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)(\w+)", line)
         if m:
             pct = float(m.group(1))
@@ -179,14 +221,12 @@ def _run_ytdlp(cmd, url, suffix=""):
             progress(100, message="下载完成")
         elif "has already been downloaded" in line:
             progress(100, message="已存在,跳过下载")
-        elif line.startswith("ERROR"):
-            error("YTDLP_ERROR", line)
-            proc.kill()
-            return False, []
+        elif line.startswith("ERROR") or "Error" in line or "error" in line:
+            err_lines.append(line)
 
     proc.wait()
     if proc.returncode != 0 and proc.returncode is not None:
-        error("YTDLP_ERROR", f"yt-dlp 退出码 {proc.returncode}")
+        error("YTDLP_ERROR", diagnose_ytdlp_error(err_lines, last_lines, proc.returncode))
         return False, []
 
     # 收集输出文件
