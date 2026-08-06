@@ -26,18 +26,6 @@ fn installed_layout_ok(id: &str) -> bool {
 }
 
 #[tokio::test]
-async fn install_audio_extract_from_github() {
-    clean_installed("audio-extract");
-    let pm = PluginManager::new();
-    let r = pm.install("audio-extract").await.expect("install should succeed");
-    assert!(r.success, "install reported failure: {}", r.message);
-    assert!(installed_layout_ok("audio-extract"),
-        "audio-extract layout wrong after install (double-nest or missing manifest)");
-    println!("installed: {}", r.message);
-    clean_installed("audio-extract");
-}
-
-#[tokio::test]
 async fn install_convert_from_github() {
     clean_installed("convert");
     let pm = PluginManager::new();

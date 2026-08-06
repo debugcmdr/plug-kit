@@ -30,14 +30,11 @@ fn download_manifest_parses() {
 fn convert_manifest_parses() {
     let m = parse_plugin("convert");
     assert!(m.commands.contains_key("convert"));
+    assert!(m.commands.contains_key("probe"));
     assert_eq!(m.commands["convert"].output_mode, "progress+json");
-}
-
-#[test]
-fn audio_extract_manifest_parses() {
-    let m = parse_plugin("audio-extract");
-    assert!(m.commands.contains_key("extract-audio"));
-    assert!(m.commands.contains_key("convert-image"));
+    // convert 命令带 input/output 占位符
+    let cmd = &m.commands["convert"];
+    assert!(cmd.stdin_args.iter().any(|a| a == "--input"));
 }
 
 #[test]

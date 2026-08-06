@@ -60,9 +60,6 @@ fn download_zip_layout_correct() { extract_and_verify_layout("download"); }
 #[test]
 fn convert_zip_layout_correct() { extract_and_verify_layout("convert"); }
 
-#[test]
-fn audio_extract_zip_layout_correct() { extract_and_verify_layout("audio-extract"); }
-
 /// Regression: the Zip-Slip guard must ACCEPT our packaged zips (they used to
 /// fail with "Absolute path in archive entry").
 #[test]

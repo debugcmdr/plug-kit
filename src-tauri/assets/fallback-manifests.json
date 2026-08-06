@@ -49,32 +49,6 @@
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/convert-0.1.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
-    },
-    {
-      "id": "audio-extract",
-      "name": "音频提取 / 图片转换",
-      "description": "ffmpeg 提取音轨、图片格式转换与压缩",
-      "version": "0.1.0",
-      "author": "plug-kit",
-      "category": "media",
-      "tags": [
-        "audio",
-        "image",
-        "extract",
-        "convert",
-        "ffmpeg"
-      ],
-      "platforms": [
-        "windows-x64",
-        "macos-arm64",
-        "macos-x64",
-        "linux-x64"
-      ],
-      "size": 5264,
-      "sha256": "f1803765618aaf28acec3ce9c576a82eb65d2b1d56ad5c7f72ecc0d7d003ba66",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/audio-extract-0.1.0.zip",
-      "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
-      "homepage": "https://github.com/debugcmdr/plug-kit"
     }
   ]
 }
