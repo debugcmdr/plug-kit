@@ -3,6 +3,7 @@ mod manifest_model;
 mod manifest_fetcher;
 mod message_bridge;
 mod protocol;
+mod preinstall;
 mod dep_manifest;
 mod tool_runner;
 mod task_queue;
@@ -180,6 +181,11 @@ pub fn run() {
     env_logger::init();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // 启动时预装默认工具(尚未安装时)
+            preinstall::ensure_preinstalled(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             install_plugin,
             uninstall_plugin,
