@@ -38,6 +38,45 @@ async fn bridge_message(
     message_bridge::handle_bridge_message(plugin_id, msg, app).await
 }
 
+/// 原生文件选择对话框核心逻辑(命令与 bridge 共用)。
+/// `extensions`: 允许的扩展名列表(如 ["mp4","mkv"]),空则全部。
+/// 返回选中的文件路径,取消返回 None。
+pub async fn dialog_open_file_inner(
+    app: tauri::AppHandle,
+    extensions: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+
+    let (tx, rx) = oneshot::channel::<Option<String>>();
+
+    // 构造对话框:按扩展名过滤
+    let mut builder = app.dialog().file();
+    if let Some(exts) = &extensions {
+        if !exts.is_empty() {
+            let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+            builder = builder.add_filter("支持的文件", &exts);
+        }
+    }
+    builder.pick_file(move |path| {
+        let _ = tx.send(path.map(|p| p.to_string()));
+    });
+
+    let result = rx.await.map_err(|e| format!("dialog error: {}", e))?;
+    Ok(result)
+}
+
+/// 原生文件选择对话框(供插件 iframe 调用)。
+/// `extensions`: 允许的扩展名列表(如 ["mp4","mkv"]),空则全部。
+/// 返回选中的文件路径,取消返回 null。
+#[tauri::command]
+async fn dialog_open_file(
+    app: tauri::AppHandle,
+    extensions: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
+    dialog_open_file_inner(app, extensions).await
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandOutput {
@@ -181,6 +220,7 @@ pub fn run() {
     env_logger::init();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 启动时预装默认工具(尚未安装时)
             preinstall::ensure_preinstalled(app.handle());
@@ -193,6 +233,7 @@ pub fn run() {
             market_list,
             market_refresh,
             bridge_message,
+            dialog_open_file,
             get_cache_stats,
             clean_orphan_cache,
             get_settings,

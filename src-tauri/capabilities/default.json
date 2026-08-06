@@ -3,6 +3,7 @@
   "description": "Default capability for the main window",
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }

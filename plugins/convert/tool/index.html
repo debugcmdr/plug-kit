@@ -24,6 +24,10 @@
 
     .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; width: 100%; margin-top: 16px; }
     .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
+    .file-row { display: flex; gap: 10px; }
+    .file-row input { flex: 1; background: #fafbfc; cursor: default; }
+    .btn-file { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+    .btn-file:hover { background: #2860e8; }
 
     .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; }
     .status.err { color: #d54941; }
@@ -44,9 +48,12 @@
       <div class="cat" data-cat="image">图片</div>
     </div>
 
-    <label>输入文件路径</label>
-    <input id="input" placeholder="/Users/name/Videos/input.mp4" />
-    <div class="hint">支持拖入路径或手动输入。视频:mp4/mkv/mov/webm/avi/gif · 音频:mp3/m4a/wav/flac/ogg · 图片:jpg/png/webp/heic</div>
+    <label>输入文件</label>
+    <div class="file-row">
+      <input id="input" placeholder="点击选择文件" readonly />
+      <button class="btn-file" id="btnPick">选择文件</button>
+    </div>
+    <div class="hint" id="fileHint">点击「选择文件」,只显示当前类别的文件。</div>
 
     <div class="row">
       <div>
@@ -85,6 +92,12 @@
       audio: ['mp3', 'm4a', 'wav', 'flac', 'ogg'],
       image: ['jpg', 'png', 'webp', 'heic'],
     };
+    // 每类可选的输入扩展名(文件选择对话框过滤)
+    const INPUT_EXTS = {
+      video: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'ts', 'ogv', '3gp', 'flv', 'wmv'],
+      audio: ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'aac', 'wma', 'aiff', 'opus'],
+      image: ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'bmp', 'gif', 'tiff'],
+    };
     const CAT_LABEL = { video: '视频', audio: '音频', image: '图片' };
     let currentCat = 'video';
 
@@ -93,6 +106,22 @@
       el.textContent = msg;
       el.className = 'status' + (isErr ? ' err' : '');
     }
+
+    // 选择文件:按当前类别过滤扩展名
+    async function pickFile() {
+      try {
+        const r = await MT.dialog.openFile(INPUT_EXTS[currentCat]);
+        if (r && r.path) {
+          $('input').value = r.path;
+          $('fileHint').textContent = `已选择:${r.path}`;
+          setStatus(`已选择${CAT_LABEL[currentCat]}文件,选择输出格式后转换。`);
+        }
+      } catch (e) {
+        setStatus('选择文件失败: ' + e, true);
+      }
+    }
+    $('btnPick').onclick = pickFile;
+    $('input').onclick = pickFile;
 
     function renderFormats() {
       const sel = $('format');
@@ -120,7 +149,7 @@
 
     async function convert() {
       const input = $('input').value.trim();
-      if (!input) { setStatus('请输入输入文件路径', true); return; }
+      if (!input) { setStatus('请先选择输入文件', true); return; }
       const fmt = $('format').value;
       const dot = input.lastIndexOf('.');
       const output = dot > 0 ? input.slice(0, dot) + '.' + fmt : input + '.' + fmt;

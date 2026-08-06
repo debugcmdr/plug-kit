@@ -50,6 +50,12 @@
     log: {
       info: function(msg) { return invoke('log_info', { msg: msg }); },
       error: function(msg) { return invoke('log_error', { msg: msg }); }
+    },
+    dialog: {
+      // 打开原生文件选择对话框,按扩展名过滤。返回路径或 null(取消)。
+      openFile: function(extensions) {
+        return invoke('dialog_open_file', { extensions: extensions || [] });
+      }
     }
   };
   window.PlugKit = MT;

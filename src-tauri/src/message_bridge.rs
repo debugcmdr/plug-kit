@@ -105,6 +105,15 @@ async fn dispatch(
             "version": crate::bridge_version::CURRENT_BRIDGE_VERSION
         })),
 
+        // 原生文件选择对话框
+        "dialog_open_file" => {
+            let exts = payload.get("extensions")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect::<Vec<_>>());
+            let path = crate::dialog_open_file_inner(app.clone(), exts).await?;
+            Ok(serde_json::json!({ "path": path }))
+        }
+
         other => Err(format!("Unknown bridge command: {}", other)),
     }
 }
