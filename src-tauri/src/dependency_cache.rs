@@ -107,9 +107,14 @@ impl DependencyCache {
             &platform,
             &spec.url,
             &spec.sha256,
+            &spec.binary_name,
             &[ref_plugin],
         ).await?;
-        Ok(dest.join(spec.binary_name))
+        let exe = dest.join(&spec.binary_name);
+        if !exe.exists() {
+            return Err(format!("Dependency '{}' installed but binary not found at {:?}", name, exe));
+        }
+        Ok(exe)
     }
 
     /// 安装共享依赖(下载 + 引用计数 + registry)。若已缓存则仅递增 refcount。
@@ -120,24 +125,25 @@ impl DependencyCache {
         platform: &str,
         url: &str,
         sha256: &str,
+        binary_name: &str,
         ref_plugins: &[&str],
     ) -> Result<PathBuf, String> {
         let _lock = self.acquire_lock()?;
         let mut registry = Registry::load_or_new(&self.registry_path)
             .map_err(|e| e.to_string())?;
-        
+
         let key = format!("{}/{}", name, version);
         let dest_dir = self.cache_dir.join(&key).join(platform);
-        
-        // Check if already exists
-        if dest_dir.exists() {
+
+        // Check if already exists (cache dir present => binary already there)
+        if dest_dir.exists() && dest_dir.join(binary_name).exists() {
             // Increment refcount
             self.increment_refcount(&mut registry, name, version, platform, ref_plugins)?;
             return Ok(dest_dir);
         }
-        
+
         // Download
-        self.download_dependency(url, &dest_dir, sha256).await?;
+        self.download_dependency(url, &dest_dir, sha256, binary_name).await?;
         
         // Get size
         let size = Self::dir_size(&dest_dir)?;
@@ -260,6 +266,7 @@ impl DependencyCache {
         url: &str,
         dest: &Path,
         sha256: &str,
+        binary_name: &str,
     ) -> Result<(), String> {
         fs::create_dir_all(dest)
             .map_err(|e| format!("Create dest dir: {}", e))?;
@@ -276,17 +283,19 @@ impl DependencyCache {
             .await
             .map_err(|e| format!("Read bytes failed: {}", e))?;
         
-        // Verify SHA256
-        crate::security::validate_sha256(&bytes, sha256)
-            .map_err(|e| e.to_string())?;
-        
-        // Write to temp then rename
+        // Verify SHA256 (only if provided; yt-dlp official release has no pinned hash)
+        if !sha256.is_empty() {
+            crate::security::validate_sha256(&bytes, sha256)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Write to temp then rename to the binary name
         let tmp = dest.join("download.tmp");
         fs::write(&tmp, bytes)
             .map_err(|e| format!("Write file: {}", e))?;
-        fs::rename(&tmp, dest.join("binary"))
+        fs::rename(&tmp, dest.join(binary_name))
             .map_err(|e| format!("Rename file: {}", e))?;
-        
+
         Ok(())
     }
 
