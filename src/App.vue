@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import TopBar from './components/TopBar.vue'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
 
@@ -48,7 +47,6 @@ window.addEventListener('message', (e) => {
     <n-message-provider>
       <n-dialog-provider>
         <div style="height: 100vh; display: flex; flex-direction: column;">
-          <TopBar />
           <div style="flex: 1; display: flex; min-height: 0;">
             <Sidebar @select="selectPlugin" />
             <div style="flex: 1; min-width: 0; overflow: auto;">

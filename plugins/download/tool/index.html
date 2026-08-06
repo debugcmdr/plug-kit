@@ -7,18 +7,15 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 20px; }
-    .card { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .card { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
     h2 { font-size: 16px; margin-bottom: 4px; }
     .sub { font-size: 12px; color: #646a73; margin-bottom: 14px; }
 
-    textarea, input { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; font-family: inherit; }
-    textarea:focus, input:focus { border-color: #3370ff; }
-    textarea { min-height: 70px; resize: vertical; line-height: 1.6; }
+    textarea { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; font-family: inherit; min-height: 70px; resize: vertical; line-height: 1.6; }
+    textarea:focus { border-color: #3370ff; }
     .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; white-space: nowrap; }
     .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
-    .url-row { display: flex; gap: 10px; align-items: flex-start; }
-    .url-row .btn { margin-top: 0; }
-    .url-hint { font-size: 11px; color: #a0a4ab; margin-top: 4px; }
+    .btn-row { display: flex; gap: 10px; margin-top: 10px; }
 
     /* 保存路径 */
     .save-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 8px; }
@@ -26,15 +23,7 @@
     .save-row .sm-btn { background: none; border: 1px solid #d0d3d9; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; }
     .save-row .sm-btn:hover { background: #f0f5ff; }
 
-    .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; }
-    .status.err { color: #d54941; }
-    .bar { height: 6px; background: #e8eaef; border-radius: 3px; margin-top: 12px; overflow: hidden; }
-    .bar > div { height: 100%; background: #3370ff; border-radius: 3px; transition: width .3s; }
-    .hidden { display: none; }
-
     /* 资源列表 */
-    .info-box { background: #f0f5ff; border-left: 3px solid #3370ff; padding: 10px 12px; border-radius: 4px; margin-top: 12px; font-size: 13px; }
-    .info-box img { max-width: 120px; border-radius: 6px; margin-bottom: 8px; display: block; }
     .res-section { margin-top: 14px; }
     .res-section h3 { font-size: 13px; color: #646a73; font-weight: 500; margin-bottom: 8px; }
     .fmt-table { width: 100%; border-collapse: collapse; }
@@ -42,19 +31,29 @@
     .fmt-table th { color: #646a73; font-weight: 500; background: #fafbfc; }
     .fmt-table tr:hover { background: #f8faff; }
     .fmt-table .pick { text-align: right; }
-    .fmt-table .pick button { background: none; border: none; color: #3370ff; cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 4px; }
-    .fmt-table .pick button:hover { background: #eef4ff; }
-    .res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
-    .res-card { border: 1px solid #e0e2e6; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: all .15s; }
-    .res-card:hover { border-color: #3370ff; background: #f8faff; }
-    .res-card .name { font-size: 13px; margin-bottom: 4px; }
-    .res-card .desc { font-size: 11px; color: #a0a4ab; }
     .size { color: #a0a4ab; font-size: 12px; }
+
+    /* 下载按钮 + 进度(按钮左侧百分比 + 完成对钩) */
+    .dl-cell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+    .dl-progress { font-size: 12px; color: #3370ff; font-weight: 500; min-width: 36px; text-align: right; }
+    .dl-progress.done { color: #18a058; }
+    .dl-check { color: #18a058; font-size: 15px; display: none; }
+    .dl-check.show { display: inline; }
+    .dl-btn { background: none; border: none; color: #3370ff; cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
+    .dl-btn:hover { background: #eef4ff; }
+    .dl-btn:disabled { color: #c0c4cc; cursor: not-allowed; }
+
+    .res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+    .res-card { border: 1px solid #e0e2e6; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .res-card:hover { border-color: #3370ff; background: #f8faff; }
+    .res-card .name { font-size: 13px; }
+    .res-card .desc { font-size: 11px; color: #a0a4ab; }
 
     /* 每个链接一个卡片 */
     .link-block { border: 1px solid #e8eaef; border-radius: 10px; padding: 12px 14px; margin-top: 12px; }
     .link-block .link-title { font-size: 13px; font-weight: 500; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
     .link-block .link-title .status-tag { font-size: 11px; color: #a0a4ab; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
@@ -64,14 +63,10 @@
 
     <!-- 多链接输入 -->
     <textarea id="urls" placeholder="每行粘贴一个链接&#10;https://www.bilibili.com/video/...&#10;https://www.youtube.com/watch?v=..."></textarea>
-    <div class="url-hint">支持多行,最多 20 条;每条会单独解析。</div>
-    <div style="margin-top: 10px; display: flex; gap: 10px;">
+    <div class="btn-row">
       <button class="btn" id="btnExtract" style="flex: 1;">提取全部</button>
       <button class="btn" id="btnClear" style="background:#fff;color:#3370ff;border:1px solid #3370ff;">清空</button>
     </div>
-
-    <div class="bar hidden" id="bar"><div id="barFill" style="width:0%"></div></div>
-    <div class="status" id="status">粘贴链接后点击「提取全部」。</div>
 
     <!-- 保存路径 -->
     <div class="save-row">
@@ -90,14 +85,7 @@
     const $ = (id) => document.getElementById(id);
 
     let saveDir = '';           // 空 = 默认 ~/Downloads/PlugKit
-    let links = [];             // [{url, title, info, error}]
-    let downloading = false;
-
-    function setStatus(msg, isErr) {
-      const el = $('status');
-      el.textContent = msg;
-      el.className = 'status' + (isErr ? ' err' : '');
-    }
+    let links = [];             // [{url, title, info, error, block}]
 
     function fmtSize(size) {
       if (!size) return '';
@@ -108,43 +96,28 @@
     async function changeDir() {
       try {
         const r = await MT.dialog.openFolder();
-        if (r && r.path) {
-          saveDir = r.path;
-          $('savePath').textContent = saveDir;
-          setStatus(`保存路径已改为: ${saveDir}`);
-        }
-      } catch (e) {
-        setStatus('更改路径失败: ' + e, true);
-      }
+        if (r && r.path) { saveDir = r.path; $('savePath').textContent = saveDir; }
+      } catch (e) { /* 静默 */ }
     }
     async function openDir() {
-      try {
-        const p = saveDir || '/Users/guest/Downloads/PlugKit';
-        await MT.openPath(p);
-      } catch (e) {
-        setStatus('打开文件夹失败: ' + e, true);
-      }
+      try { await MT.openPath(saveDir); } catch (e) { /* 静默 */ }
     }
     $('btnChangeDir').onclick = changeDir;
     $('btnOpenDir').onclick = openDir;
-    $('btnClear').onclick = () => { $('urls').value = ''; links = []; $('resultSection').classList.add('hidden'); setStatus('已清空'); };
+    $('btnClear').onclick = () => { $('urls').value = ''; links = []; $('resultSection').classList.add('hidden'); };
 
     // ---- 提取全部(多链接)----
     async function extractAll() {
       const raw = $('urls').value.trim();
-      if (!raw) { setStatus('请输入链接', true); return; }
-      // 按行拆分,过滤空行,去重,限 20
-      const urls = [...new Set(raw.split('\n').map(s => s.trim()).filter(Boolean))];
-      if (urls.length === 0) { setStatus('未检测到有效链接', true); return; }
-      if (urls.length > 20) { setStatus('最多支持 20 条链接,已截断', true); }
-      const limited = urls.slice(0, 20);
+      if (!raw) return;
+      const urls = [...new Set(raw.split('\n').map(s => s.trim()).filter(Boolean))].slice(0, 20);
+      if (urls.length === 0) return;
 
       $('btnExtract').disabled = true;
       $('resultSection').classList.remove('hidden');
       $('resultSection').innerHTML = '';
 
-      // 每个链接一个块,先显示"解析中"
-      links = limited.map((url, i) => ({ url, title: `链接 ${i + 1}`, info: null, error: null, block: null }));
+      links = urls.map((url, i) => ({ url, title: `链接 ${i + 1}`, info: null, error: null, block: null }));
       links.forEach((l, i) => {
         const block = document.createElement('div');
         block.className = 'link-block';
@@ -153,7 +126,7 @@
         l.block = block;
       });
 
-      // 并发提取(有限并发,避免太多请求)
+      // 并发提取
       const CONCURRENCY = 5;
       let idx = 0;
       async function worker() {
@@ -168,19 +141,13 @@
           } catch (e) {
             l.error = String(e);
             const tag = l.block.querySelector('.status-tag');
-            tag.textContent = '❌ 失败';
+            tag.textContent = '❌ 解析失败';
             tag.style.color = '#d54941';
-            l.block.querySelector('.link-title span').innerHTML = `链接 ${i + 1} · <span style="color:#d54941;font-size:12px;">解析失败:${l.error}</span>`;
           }
         }
       }
-      const workers = Array.from({ length: Math.min(CONCURRENCY, links.length) }, () => worker());
-      await Promise.all(workers);
-
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, links.length) }, () => worker()));
       $('btnExtract').disabled = false;
-      const okCount = links.filter(l => l.info).length;
-      const failCount = links.length - okCount;
-      setStatus(okCount > 0 ? `✅ 提取完成:${okCount} 成功${failCount ? ', ' + failCount + ' 失败' : ''}。选择要下载的内容。` : '❌ 全部提取失败', failCount === links.length);
     }
 
     // 渲染单个链接的资源
@@ -192,26 +159,25 @@
       block.querySelector('.link-title span').innerHTML = `<b>${l.title}</b> · <span style="color:#a0a4ab;font-size:12px;">${l.url}</span>`;
 
       let html = '';
-      // 视频清晰度
       const formats = (l.info.video_formats || []);
       if (formats.length > 0) {
         html += '<div class="res-section"><h3>视频</h3><table class="fmt-table"><thead><tr><th>清晰度</th><th>格式</th><th>大小</th><th></th></tr></thead><tbody>';
         formats.forEach(f => {
-          html += `<tr><td>${f.label}</td><td>${f.ext}</td><td class="size">${fmtSize(f.size)}</td><td class="pick"><button data-action="dl-video" data-idx="${links.indexOf(l)}" data-label="${f.label}">下载</button></td></tr>`;
+          html += `<tr><td>${f.label}</td><td>${f.ext}</td><td class="size">${fmtSize(f.size)}</td><td class="pick"><div class="dl-cell"><span class="dl-progress" data-prog></span><span class="dl-check">✓</span><button class="dl-btn" data-action="dl-video" data-idx="${links.indexOf(l)}" data-label="${f.label}">下载</button></div></td></tr>`;
         });
         html += '</tbody></table></div>';
       } else {
-        html += `<div class="res-section"><h3>视频</h3><div class="res-grid"><div class="res-card" data-action="dl-video" data-idx="${links.indexOf(l)}" data-label="best"><div class="name">最佳画质</div></div></div></div>`;
+        const ai = links.indexOf(l);
+        html += `<div class="res-section"><h3>视频</h3><div class="res-grid"><div class="res-card" data-action="dl-video" data-idx="${ai}" data-label="best"><span class="name">最佳画质</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div></div></div>`;
       }
       // 音频 + 图片
       const ai = links.indexOf(l);
       html += `<div class="res-section"><h3>音频 / 图片</h3><div class="res-grid">
-        <div class="res-card" data-action="dl-audio" data-idx="${ai}"><div class="name">提取音频 (MP3)</div></div>
-        <div class="res-card" data-action="dl-image" data-idx="${ai}"><div class="name">封面图片</div></div>
+        <div class="res-card" data-action="dl-audio" data-idx="${ai}"><span class="name">提取音频 (MP3)</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
+        <div class="res-card" data-action="dl-image" data-idx="${ai}"><span class="name">封面图片</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
       </div></div>`;
-      // 直播
       if (l.info.is_live) {
-        html += `<div class="res-section"><h3>直播</h3><div class="res-grid"><div class="res-card" data-action="dl-live" data-idx="${ai}"><div class="name">录制直播</div></div></div></div>`;
+        html += `<div class="res-section"><h3>直播</h3><div class="res-grid"><div class="res-card" data-action="dl-live" data-idx="${ai}"><span class="name">录制直播</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div></div></div>`;
       }
       const content = document.createElement('div');
       content.innerHTML = html;
@@ -219,46 +185,42 @@
 
       // 绑定下载
       block.querySelectorAll('[data-action]').forEach(el => {
-        el.onclick = () => startDownload(el.dataset.action, Number(el.dataset.idx), el.dataset.label || 'best');
+        el.onclick = () => startDownload(el.dataset.action, Number(el.dataset.idx), el.dataset.label || 'best', el);
       });
     }
 
-    // 下载单个资源
-    async function startDownload(kind, linkIdx, quality) {
-      if (downloading) { setStatus('已有下载进行中,请稍候', true); return; }
+    // 下载单个资源:进度显示在按钮左侧,完成显示绿色对钩
+    async function startDownload(kind, linkIdx, quality, el) {
       const l = links[linkIdx];
-      if (!l || !l.info) { setStatus('该链接未解析成功', true); return; }
-      downloading = true;
-
+      if (!l || !l.info) return;
       const category = kind.replace('dl-', '');
-      const bar = $('bar'), fill = $('barFill');
-      bar.classList.remove('hidden');
-      fill.style.width = '0%';
+      const prog = el.querySelector('[data-prog]');
+      const check = el.querySelector('.dl-check');
+      const btn = el.querySelector('.dl-btn') || el;
+      if (btn) btn.disabled = true;
+      if (prog) prog.textContent = '0%';
+
       const off = MT.onProgress((evt) => {
         const d = evt.data || evt;
         const pct = d.percent != null ? Math.min(100, Math.max(0, d.percent)) : 0;
-        fill.style.width = pct + '%';
-        setStatus(`${d.message || '下载中'} ${pct.toFixed(0)}%${d.speed ? ' ' + d.speed : ''}`);
+        if (prog) { prog.textContent = pct.toFixed(0) + '%'; prog.classList.remove('done'); }
       });
 
-      setStatus(`正在下载: ${l.title} (${category})`);
       try {
         const r = await MT.invoke('download', {
-          url: l.url,
-          category,
+          url: l.url, category,
           quality: quality || 'best',
           output_dir: saveDir || undefined,
           extra: '',
         });
-        const files = r.files || [];
-        setStatus(`✅ 下载完成!\n${l.title}\n保存到: ${r.output_dir || saveDir || '~/Downloads/PlugKit'}\n文件: ${files.slice(0, 6).join(', ')}${files.length > 6 ? ' ...' : ''}`);
-        // 显示实际保存路径
         if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
+        if (prog) { prog.textContent = '100%'; prog.classList.add('done'); }
+        if (check) check.classList.add('show');
       } catch (e) {
-        setStatus('❌ 下载失败: ' + e, true);
+        if (prog) { prog.textContent = '失败'; prog.style.color = '#d54941'; }
       } finally {
-        downloading = false;
         off();
+        if (btn) btn.disabled = false;
       }
     }
 
