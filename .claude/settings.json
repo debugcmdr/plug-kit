@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(npm run build)",
+      "Bash(npm run tauri dev)",
+      "Bash(npm run tauri build)",
+      "Bash(cargo check)",
+      "Bash(cargo test)",
+      "Bash(cargo build)",
+      "Bash(git status)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(ls *)",
+      "Bash(ls -la *)",
+      "Bash(pwd)",
+      "Bash(find *)",
+      "Bash(cat *)",
+      "Bash(rm -rf /Users/main/Documents/plugkit/plugkit/tmp/*)",
+      "Bash(./scripts/sync-plugins.sh)",
+      "Bash(shasum *)",
+      "Bash(python3 *)",
+      "Bash(ffmpeg *)",
+      "Bash(pkill *)",
+      "Bash(ps *)",
+      "Bash(pgrep *)",
+      "Bash(grep *)",
+      "Bash(mkdir *)",
+      "Bash(chmod *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Edit",
+      "Write"
+    ]
+  }
+}

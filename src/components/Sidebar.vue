@@ -11,17 +11,10 @@ const emit = defineEmits<{
 const installedPlugins = ref<PluginInfo[]>([])
 const activeKey = ref<string | null>(null)
 
-// 顶部单条工具(不套分类):万能下载
-const TOP_TOOL = { id: 'download', label: '万能下载', icon: 'download' }
-
-// 分类 → 插件映射(语义分类,插件动态安装)
-const CATEGORIES = [
-  {
-    key: 'convert',
-    label: '格式转换',
-    icon: 'convert',
-    pluginIds: ['convert'],
-  },
+// 平铺工具列表(一级一行,不套分类;三个选项在插件右侧界面里)
+const TOOLS = [
+  { id: 'download', label: '万能下载', icon: 'download' },
+  { id: 'convert', label: '格式转换', icon: 'convert' },
 ]
 
 async function loadInstalled() {
@@ -36,9 +29,9 @@ async function loadInstalled() {
 onMounted(loadInstalled)
 watch(installedVersion, loadInstalled)
 
-// 某个分类下已安装的插件
-function categoryPlugins(pluginIds: string[]): PluginInfo[] {
-  return installedPlugins.value.filter(p => pluginIds.includes(p.id))
+// 该工具是否已安装
+function isInstalled(id: string): boolean {
+  return installedPlugins.value.some(p => p.id === id)
 }
 
 function handleSelect(target: string) {
@@ -57,59 +50,20 @@ function handleSelect(target: string) {
     style="height: 100%; display: flex; flex-direction: column;"
   >
     <div style="flex: 1; overflow: auto; padding: 8px 0;">
-      <!-- 顶部单条工具:万能下载(不套分类,一条即可) -->
+      <!-- 平铺工具列表(一级一行) -->
       <div
-        v-if="categoryPlugins([TOP_TOOL.id]).length > 0"
+        v-for="tool in TOOLS"
+        :key="tool.id"
         class="top-tool"
-        :class="{ active: activeKey === TOP_TOOL.id }"
-        @click="handleSelect(TOP_TOOL.id)"
+        :class="{ active: activeKey === tool.id }"
+        @click="handleSelect(tool.id)"
       >
         <n-icon size="15">
-          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <svg v-if="tool.icon === 'download'" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
         </n-icon>
-        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ TOP_TOOL.label }}</span>
-      </div>
-      <div v-else class="top-tool cat-empty" @click="handleSelect('market')">
-        <n-icon size="13"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></n-icon>
-        <span>万能下载 · 去市场安装</span>
-      </div>
-
-      <!-- 分类区块 -->
-      <div v-for="cat in CATEGORIES" :key="cat.key" style="margin-bottom: 4px; margin-top: 8px;">
-        <div
-          style="display: flex; align-items: center; gap: 6px; padding: 6px 16px; font-size: 12px; color: var(--n-text-color-3);"
-        >
-          <n-icon size="14">
-            <svg v-if="cat.icon === 'download'" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            <svg v-else-if="cat.icon === 'convert'" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
-            <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-          </n-icon>
-          <span>{{ cat.label }}</span>
-        </div>
-
-        <!-- 分类下的插件 -->
-        <div
-          v-for="plugin in categoryPlugins(cat.pluginIds)"
-          :key="plugin.id"
-          class="cat-item"
-          :class="{ active: activeKey === plugin.id }"
-          @click="handleSelect(plugin.id)"
-        >
-          <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ plugin.name }}</span>
-        </div>
-
-        <!-- 分类下无已装插件 → 提示去市场 -->
-        <div
-          v-if="cat.pluginIds.length > 0 && categoryPlugins(cat.pluginIds).length === 0"
-          class="cat-empty"
-          @click="handleSelect('market')"
-        >
-          <n-icon size="13"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></n-icon>
-          <span>去市场安装</span>
-        </div>
-        <div v-else-if="cat.pluginIds.length === 0" class="cat-empty" style="cursor: default;">
-          <span>暂无工具</span>
-        </div>
+        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tool.label }}</span>
+        <span v-if="!isInstalled(tool.id)" class="not-installed">未安装</span>
       </div>
     </div>
 
@@ -156,29 +110,14 @@ function handleSelect(target: string) {
 .top-tool:hover { background: var(--n-hover-color); }
 .top-tool.active { background: var(--n-primary-color-soft); color: var(--n-primary-color); }
 
-.cat-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 16px 7px 42px;
-  font-size: 13px;
-  color: var(--n-text-color-1);
-  cursor: pointer;
-  transition: background-color 0.15s;
-}
-.cat-item:hover { background: var(--n-hover-color); }
-.cat-item.active { background: var(--n-primary-color-soft); color: var(--n-primary-color); font-weight: 500; }
-
-.cat-empty {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 16px 6px 42px;
-  font-size: 12px;
+.not-installed {
+  font-size: 11px;
   color: var(--n-text-color-3);
-  cursor: pointer;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
 }
-.cat-empty:hover { color: var(--n-primary-color); }
 
 .bottom-item {
   display: flex;
