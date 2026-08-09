@@ -38,6 +38,8 @@ onMounted(async () => {
   if (!el) return
   const resize = () => {
     const h = el.clientHeight
+    const w = el.clientWidth
+    console.log(`[PluginPanel:${props.pluginId}] container size: ${w}x${h}`)
     if (h > 0) {
       el.style.height = h + 'px'
     }
@@ -51,6 +53,16 @@ onMounted(async () => {
     observer.disconnect()
     window.removeEventListener('resize', resize)
   })
+  // 也观察父容器（因为父容器可能才是真正的高度来源）
+  const parent = el.parentElement
+  if (parent) {
+    const parentObserver = new ResizeObserver(() => {
+      console.log(`[PluginPanel:${props.pluginId}] parent size: ${parent.clientWidth}x${parent.clientHeight}`)
+      resize()
+    })
+    parentObserver.observe(parent)
+    onBeforeUnmount(() => parentObserver.disconnect())
+  }
 })
 </script>
 
