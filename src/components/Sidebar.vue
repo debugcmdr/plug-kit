@@ -68,8 +68,8 @@ function handleSelect(target: string) {
       </div>
     </div>
 
-    <!-- 底部导航 -->
-    <div style="border-top: 1px solid var(--n-divider-color); padding: 8px;">
+    <!-- 底部导航：固定在底部 -->
+    <div style="flex-shrink: 0; border-top: 1px solid var(--n-divider-color); padding: 8px;">
       <div
         class="bottom-item"
         :class="{ active: activeKey === 'tasks' }"
