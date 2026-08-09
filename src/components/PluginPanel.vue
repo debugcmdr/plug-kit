@@ -40,10 +40,10 @@ onMounted(async () => {
       <div style="height:100%; width:40%; background:var(--n-primary-color); animation:plushkit-pulse 1s ease-in-out infinite;"></div>
     </div>
 
-    <!-- 内容区：padding 24px 与顶部对齐，右边/下边也保留空间 -->
-    <div style="flex:1; min-height:0; padding:24px; overflow:auto; background:#fff;">
+    <!-- 内容区：iframe 自身控制内边距，容器只负责背景/圆角/溢出 -->
+    <div style="flex:1; min-height:0; background:#fff; border-radius:0 0 8px 8px; overflow:hidden;">
       <!-- iframe 容器 -->
-      <div v-if="!loadError" style="border-radius:8px; overflow:hidden; background:#fff; min-height:0;">
+      <div v-if="!loadError" style="height:100%;">
         <iframe
           :src="iframeSrc"
           :data-plugin-id="props.pluginId"
