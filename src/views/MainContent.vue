@@ -21,6 +21,8 @@ const view = computed<'market' | 'settings' | 'plugin' | 'tasks' | 'logs' | 'hom
 })
 
 // 已访问插件 iframe 全局常驻，切换视图时不卸载
+// 关键：不在 DOM 中移除/隐藏，而是用 visibility:hidden 保持布局
+// 这样 ResizeObserver 仍能正确测量尺寸
 const visitedPlugins = ref<string[]>([])
 watch(() => props.activePlugin, (id) => {
   if (id && !['market', 'settings', 'tasks', 'logs'].includes(id)
@@ -31,22 +33,23 @@ watch(() => props.activePlugin, (id) => {
 </script>
 
 <template>
-  <!-- 外层用 flex column，让各面板自然撑满剩余高度 -->
+  <!-- 外层 flex column，无 overflow: hidden，让各面板自然撑满 -->
   <div style="height: 100%; display: flex; flex-direction: column; overflow: hidden;">
     <!-- 首页 -->
-    <div v-if="view === 'home'" style="padding: 24px;">
+    <div v-if="view === 'home'" style="padding: 24px; flex-shrink: 0;">
       <n-h2 style="margin-bottom: 8px;">欢迎使用 PlugKit</n-h2>
       <n-p style="color: var(--n-text-color-3);">
         从左侧选择一个工具开始使用；或打开插件市场安装更多工具。
       </n-p>
     </div>
 
-    <!-- 插件 iframe 常驻，flex 撑满 -->
+    <!-- 插件 iframe 常驻，始终在 DOM 中（不 v-show），用 visibility 控制显示/隐藏 -->
+    <!-- 这样 ResizeObserver 始终能测量到正确的容器尺寸 -->
     <div
       v-for="pid in visitedPlugins"
       :key="pid"
-      v-show="view === 'plugin' && activePlugin === pid"
       style="flex: 1; min-height: 0; overflow: hidden;"
+      :style="{ visibility: view === 'plugin' && activePlugin === pid ? 'visible' : 'hidden' }"
     >
       <PluginPanel :plugin-id="pid" />
     </div>
