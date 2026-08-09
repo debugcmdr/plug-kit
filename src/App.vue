@@ -70,7 +70,7 @@ window.addEventListener('message', (e) => {
         <div style="height: 100vh; display: flex; flex-direction: column;">
           <div style="flex: 1; display: flex; min-height: 0;">
             <Sidebar @select="selectPlugin" />
-            <div style="flex: 1; min-width: 0; overflow: auto;">
+            <div style="flex: 1; min-width: 0; overflow: hidden;">
               <MainContent :active-plugin="activePlugin" @update:active-plugin="selectPlugin" />
             </div>
           </div>
