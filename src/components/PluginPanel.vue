@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 
 const props = defineProps<{
   pluginId: string
 }>()
 
+const containerRef = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 
@@ -31,20 +32,40 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+
+  // ResizeObserver: 容器尺寸变化时自动调整 iframe 高度
+  const el = containerRef.value
+  if (!el) return
+  const resize = () => {
+    const h = el.clientHeight
+    if (h > 0) {
+      el.style.height = h + 'px'
+    }
+  }
+  resize() // 立即计算
+  const observer = new ResizeObserver(resize)
+  observer.observe(el)
+  // 窗口 resize 时也更新
+  window.addEventListener('resize', resize)
+  onBeforeUnmount(() => {
+    observer.disconnect()
+    window.removeEventListener('resize', resize)
+  })
 })
 </script>
 
 <template>
-  <!-- flex column: 顶部状态条 + iframe 自适应填满剩余高度 -->
-  <div style="display:flex; flex-direction:column; height:100%;">
-    <!-- 加载状态条（仅 loading 时显示） -->
+  <!-- 使用 ref 容器 + ResizeObserver 动态设置高度 -->
+  <div ref="containerRef" style="display:flex; flex-direction:column;">
+    <!-- 加载状态条 -->
     <div
       v-if="loading"
       style="height:3px; flex-shrink:0; background:var(--n-primary-color); border-radius:2px;"
     >
-      <div style="height:100%; width:40%; background:var(--n-primary-color); border-radius:2px; animation:plushkit-pulse 1s ease-in-out infinite;" />
+      <div style="height:100%; width:40%; background:var(--n-primary-color); border-radius:2px; animation:plushkit-pulse 1s ease-in-out infinite;"></div>
     </div>
 
+    <!-- iframe 容器: flex:1 撑满剩余空间 -->
     <div style="flex:1; min-height:0; border-radius:0 0 8px 8px; overflow:hidden; background:#fff;">
       <iframe
         v-if="!loadError"
