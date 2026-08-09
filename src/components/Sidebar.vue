@@ -47,7 +47,8 @@ function handleSelect(target: string) {
     :default-collapsed="false"
     :show-trigger="false"
     :native-scrollbar="false"
-    style="height: 100%; display: flex; flex-direction: column;"
+    :content-style="{ display: 'flex', flexDirection: 'column', height: '100%' }"
+    style="height: 100%;"
   >
     <div style="flex: 1; overflow: auto; padding: 8px 0;">
       <!-- 动态工具列表 -->
