@@ -50,26 +50,37 @@ function lineClass(line: string) {
 </script>
 
 <template>
-  <div style="padding: 24px; min-height: 100%; display:flex; flex-direction:column; gap:12px;">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <n-h2 style="margin:0">日志</n-h2>
-      <n-space>
+  <div style="padding: 20px 24px 12px; display:flex; flex-direction:column; gap:10px; height:100%;">
+    <!-- 工具栏 -->
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+      <n-h3 style="margin:0; font-size:16px;">日志</n-h3>
+      <n-space size="small">
         <n-button size="small" quaternary @click="fetchLogs">刷新</n-button>
         <n-button size="small" quaternary type="error" @click="clearLogs">清空</n-button>
-        <n-tag :type="autoScroll ? 'success' : 'default'" round size="small" style="cursor:pointer" @click="autoScroll = !autoScroll">
+        <n-tag
+          :type="autoScroll ? 'success' : 'default'"
+          round size="small"
+          style="cursor:pointer; font-size:12px;"
+          @click="autoScroll = !autoScroll"
+        >
           {{ autoScroll ? '自动滚动' : '手动滚动' }}
         </n-tag>
       </n-space>
     </div>
 
-    <n-radio-group v-model:value="filterLevel" @change="fetchLogs" size="small">
+    <!-- 级别过滤 -->
+    <n-radio-group v-model:value="filterLevel" @change="fetchLogs" size="small" style="flex-shrink:0;">
       <n-radio-button v-for="l in LEVELS" :key="l.key" :value="l.key">{{ l.label }}</n-radio-button>
     </n-radio-group>
 
-    <div id="log-scroll"
-      style="flex:1; overflow:auto; background:#1e1e1e; border-radius:8px; padding:12px; font-family:Monaco,Menlo,Consolas,monospace; font-size:12px; line-height:1.8; color:#d4d4d4; min-height:300px; max-height:calc(100vh - 240px);"
+    <!-- 日志内容区 -->
+    <div
+      id="log-scroll"
+      style="flex:1; min-height:0; overflow:auto; background:var(--n-color); border-radius:8px; padding:12px 14px;
+             font-family:Monaco,Menlo,Consolas,monospace; font-size:12px; line-height:1.75;
+             color:var(--n-text-color-1);"
     >
-      <div v-if="rawLines.length === 0" style="color:#666; text-align:center; padding:40px;">
+      <div v-if="rawLines.length === 0" style="color:var(--n-text-color-3); text-align:center; padding:40px;">
         暂无日志
       </div>
       <div v-for="(line, i) in rawLines" :key="i" :class="lineClass(line)">
@@ -81,5 +92,5 @@ function lineClass(line: string) {
 
 <style scoped>
 .log-error { color: #f53f3f; }
-.log-warn  { color: #f0a50b; }
+.log-warn  { color: #e8a838; }
 </style>

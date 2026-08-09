@@ -110,6 +110,14 @@ async fn open_in_folder(app: tauri::AppHandle, path: String) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
+/// 返回用户主目录路径(供前端打开数据/日志目录使用)。
+#[tauri::command]
+fn get_home_dir() -> String {
+    dirs::home_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandOutput {
@@ -315,6 +323,7 @@ pub fn run() {
             market_refresh,
             bridge_message,
             open_in_folder,
+            get_home_dir,
             get_cache_stats,
             clean_orphan_cache,
             get_settings,
