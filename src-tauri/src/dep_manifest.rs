@@ -47,7 +47,7 @@ pub fn dep_available_on_path(name: &str) -> bool {
     } else {
         name.to_string()
     };
-    // 用 `which` 探测系统 PATH
+    // 用 system `which` 探测 PATH，与 dep_manifest 工具目录无关
     let output = std::process::Command::new("sh")
         .args(["-c", &format!("command -v {} 2>/dev/null", exe)])
         .output();

@@ -1,4 +1,13 @@
 use serde::{Deserialize, Serialize};
+use once_cell::sync::Lazy;
+
+/// 共享 HTTP 客户端(市场清单拉取用，15s 超时)。
+static MARKET_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .expect("reqwest client build failed")
+});
 
 /// Market plugin entry — light metadata used by the store UI.
 /// This is what `plugins.json` (GitHub Raw) contains; the full
@@ -59,12 +68,7 @@ pub async fn fetch_market_manifests() -> Result<Vec<ManifestSummary>, String> {
 /// Fetch the remote marketplace manifest from GitHub Raw with a timeout.
 async fn fetch_remote_manifests() -> Result<Vec<ManifestSummary>, String> {
     let url = std::env::var("PLUGKIT_MANIFEST_URL").unwrap_or_else(|_| DEFAULT_MANIFEST_URL.to_string());
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("Build client: {}", e))?;
-
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let resp = MARKET_CLIENT.get(&url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -121,12 +125,7 @@ pub async fn download_with_fallback(
 }
 
 async fn download_single(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Build client: {}", e))?;
-
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let resp = crate::dependency_cache::HTTP_CLIENT.get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }

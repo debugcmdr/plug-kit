@@ -3,6 +3,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use fs2::FileExt;
+use once_cell::sync::Lazy;
+
+/// 共享 HTTP 客户端(依赖下载用，120s 超时)。
+pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("reqwest client build failed")
+});
 
 pub struct DependencyCache {
     cache_dir: PathBuf,
@@ -271,7 +280,8 @@ impl DependencyCache {
         fs::create_dir_all(dest)
             .map_err(|e| format!("Create dest dir: {}", e))?;
         
-        let resp = reqwest::get(url)
+        let resp = HTTP_CLIENT.get(url)
+            .send()
             .await
             .map_err(|e| format!("Download failed: {}", e))?;
         

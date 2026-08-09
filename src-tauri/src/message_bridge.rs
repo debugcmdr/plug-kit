@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
 
 /// Message sent by a plugin iframe via postMessage and relayed through the
 /// window-level listener into this Tauri command. `command` names one of the
@@ -44,8 +43,7 @@ async fn dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'command' in payload")?;
             let params = payload.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            let runner = crate::tool_runner::ToolRunner::new();
-            runner.invoke(plugin_id, command_name, params, Some(app)).await
+            crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app)).await
         }
 
         // Task queue
@@ -132,22 +130,7 @@ async fn dispatch(
         other => {
             let params = payload.get("params").cloned()
                 .unwrap_or_else(|| payload.clone());
-            let runner = crate::tool_runner::ToolRunner::new();
-            runner.invoke(plugin_id, other, params, Some(app)).await
+            crate::TOOL_RUNNER.invoke(plugin_id, other, params, Some(app)).await
         }
     }
-}
-
-/// Emit a progress event to all plugin iframes listening on `plugkit:task-progress`.
-pub fn emit_progress(app: &tauri::AppHandle, plugin_id: &str, task_id: &str, data: serde_json::Value) {
-    let _ = app.emit("plugkit:task-progress", serde_json::json!({
-        "plugin_id": plugin_id,
-        "task_id": task_id,
-        "data": data,
-    }));
-}
-
-/// Emit a task state change (for the TaskBar).
-pub fn emit_task_updated(app: &tauri::AppHandle, task: &serde_json::Value) {
-    let _ = app.emit("plugkit:task-updated", task.clone());
 }

@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 /// 预装插件 id 列表(与 Resources/plugins/ 下的目录一致)。
-/// 格式转换(convert)已涵盖视频/音频/图片三大类,audio-extract 保留在市场可选。
 const PREINSTALLED: &[&str] = &["download", "convert"];
 
 /// 应用资源目录下的插件根(打包后位于 Resources/plugins/)。

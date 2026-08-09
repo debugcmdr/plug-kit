@@ -78,7 +78,7 @@ impl Registry {
 
     pub fn save(&self, path: &Path) -> Result<(), SecurityError> {
         if path.exists() {
-            for i in (1..3).rev() {
+            for i in 1..=3 {
                 let src = path.with_file_name(format!("registry.json.bak.{}", i));
                 let dst = path.with_file_name(format!("registry.json.bak.{}", i + 1));
                 if src.exists() {

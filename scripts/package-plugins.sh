@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 打包三个内置插件为可分发的 zip,并更新 fallback 清单的 sha256。
-# 产物:dist/plugins/{id}.zip (用于上传 GitHub Release)
+# 打包内置插件为可分发的 zip,并更新 fallback 清单的 sha256。
+# 产物:release/plugins/{id}.zip (用于上传 GitHub Release)
 # 用法:./scripts/package-plugins.sh [tag]
 set -euo pipefail
 
@@ -19,7 +19,7 @@ OUT_DIR="release/plugins"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*.zip
 
-for id in download convert audio-extract; do
+for id in download convert; do
   echo "=== 打包 $id ==="
 
   # 临时打包目录:manifest.json + tool/

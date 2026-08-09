@@ -27,7 +27,14 @@ pub mod api {
 }
 
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+
+/// 模块级单例：PluginManager 持有插件安装/卸载/列表状态，避免每个命令重建实例。
+static PLUGIN_MANAGER: once_cell::sync::Lazy<plugin_manager::PluginManager> =
+    once_cell::sync::Lazy::new(plugin_manager::PluginManager::new);
+
+/// 模块级单例：ToolRunner 持有工作目录配置，避免每次 CLI 调用都重建。
+static TOOL_RUNNER: once_cell::sync::Lazy<tool_runner::ToolRunner> =
+    once_cell::sync::Lazy::new(tool_runner::ToolRunner::new);
 
 /// Bridge entry point: plugin iframes send postMessage -> window listener ->
 /// this command -> dispatched to the right backend service.
@@ -76,19 +83,6 @@ pub async fn dialog_open_file_inner(
     Ok(result)
 }
 
-/// 原生文件选择对话框(供插件 iframe 调用)。
-/// `extensions`: 允许的扩展名列表(如 ["mp4","mkv"]),空则全部。
-/// `multiple`: 是否允许多选,默认 false。
-/// 返回选中文件路径列表,取消返回空数组。
-#[tauri::command]
-async fn dialog_open_file(
-    app: tauri::AppHandle,
-    extensions: Option<Vec<String>>,
-    multiple: Option<bool>,
-) -> Result<Vec<String>, String> {
-    dialog_open_file_inner(app, extensions, multiple.unwrap_or(false)).await
-}
-
 /// 选择文件夹(供插件 iframe 调用,如"更改保存路径")。
 /// 返回选中的文件夹路径,取消返回 None。
 pub async fn dialog_open_folder_inner(
@@ -97,11 +91,6 @@ pub async fn dialog_open_folder_inner(
     use tauri_plugin_dialog::DialogExt;
     let picked = app.dialog().file().blocking_pick_folder();
     Ok(picked.map(|p| p.to_string()))
-}
-
-#[tauri::command]
-async fn dialog_open_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    dialog_open_folder_inner(app).await
 }
 
 /// 在系统文件管理器中打开指定路径(文件夹或文件的所在目录)。
@@ -147,28 +136,24 @@ pub struct InstallResult {
 
 #[tauri::command]
 async fn install_plugin(plugin_id: String, _release_url: Option<String>) -> Result<InstallResult, String> {
-    let pm = plugin_manager::PluginManager::new();
-    pm.install(&plugin_id).await
+    PLUGIN_MANAGER.install(&plugin_id).await
 }
 
 #[tauri::command]
 async fn uninstall_plugin(plugin_id: String) -> Result<InstallResult, String> {
-    let pm = plugin_manager::PluginManager::new();
-    pm.uninstall(&plugin_id).await
+    PLUGIN_MANAGER.uninstall(&plugin_id).await
 }
 
 #[tauri::command]
 async fn list_plugins() -> Result<Vec<PluginInfo>, String> {
-    let pm = plugin_manager::PluginManager::new();
-    pm.list().await
+    PLUGIN_MANAGER.list().await
 }
 
 /// Market view: installed plugins (from disk) + available plugins (from marketplace manifest).
 /// Each entry carries `is_installed` / `installed_version` so the UI can toggle install state.
 #[tauri::command]
 async fn market_list() -> Result<Vec<PluginInfo>, String> {
-    let pm = plugin_manager::PluginManager::new();
-    let installed = pm.list().await?;
+    let installed = PLUGIN_MANAGER.list().await?;
     let available = manifest_fetcher::fetch_market_manifests().await?;
 
     let mut merged: Vec<PluginInfo> = Vec::new();
@@ -277,8 +262,6 @@ pub fn run() {
             market_list,
             market_refresh,
             bridge_message,
-            dialog_open_file,
-            dialog_open_folder,
             open_in_folder,
             get_cache_stats,
             clean_orphan_cache,

@@ -19,7 +19,6 @@
 |------|------|------|
 | [download](https://github.com/plug-kit/plugkit-download) | 视频链接下载(YouTube / Bilibili 等) | yt-dlp |
 | [convert](https://github.com/plug-kit/plugkit-convert) | 视频格式转换、压缩 | ffmpeg |
-| [audio-extract](https://github.com/plug-kit/plugkit-audio-extract) | 音频提取、图片转换 | ffmpeg |
 
 ## 📦 安装
 
