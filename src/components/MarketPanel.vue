@@ -68,7 +68,7 @@ const filteredPlugins = () => {
 </script>
 
 <template>
-  <div>
+  <div style="padding: 24px; display: flex; flex-direction: column; gap: 0;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
       <n-h2 style="margin: 0;">插件市场</n-h2>
       <n-button size="small" :loading="manualRefreshLoading" @click="manualRefresh">刷新</n-button>
