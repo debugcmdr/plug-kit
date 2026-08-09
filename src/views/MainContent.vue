@@ -1,25 +1,30 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import PluginPanel from '../components/PluginPanel.vue'
 import MarketPanel from '../components/MarketPanel.vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
+import TaskPanel from '../components/TaskPanel.vue'
+import LogPanel from '../components/LogPanel.vue'
 
 const props = defineProps<{
   activePlugin: string | null
 }>()
 
-// 当前视图类型:market / settings / plugin / home
-const view = computed<'market' | 'settings' | 'plugin' | 'home'>(() =>
-  props.activePlugin === 'market' ? 'market'
-  : props.activePlugin === 'settings' ? 'settings'
-  : props.activePlugin ? 'plugin' : 'home'
-)
+// 当前视图类型
+const view = computed<'market' | 'settings' | 'plugin' | 'tasks' | 'logs' | 'home'>(() => {
+  const id = props.activePlugin
+  if (id === 'market') return 'market'
+  if (id === 'settings') return 'settings'
+  if (id === 'tasks') return 'tasks'
+  if (id === 'logs') return 'logs'
+  if (id) return 'plugin'
+  return 'home'
+})
 
-// 所有访问过的插件 id —— iframe 全局常驻,任何视图下都不卸载
-// (market/settings 切换也不丢,因为插件 iframe 始终挂载,只是 v-show 隐藏)
+// 所有访问过的插件 id —— iframe 全局常驻,切换其他视图也不卸载
 const visitedPlugins = ref<string[]>([])
 watch(() => props.activePlugin, (id) => {
-  if (id && !['market', 'settings'].includes(id) && !visitedPlugins.value.includes(id)) {
+  if (id && !['market', 'settings', 'tasks', 'logs'].includes(id) && !visitedPlugins.value.includes(id)) {
     visitedPlugins.value.push(id)
   }
 }, { immediate: true })
@@ -35,7 +40,7 @@ watch(() => props.activePlugin, (id) => {
       </n-p>
     </div>
 
-    <!-- 插件 iframe 无条件常驻(全局缓存,切换 market/settings 也不丢) -->
+    <!-- 插件 iframe 无条件常驻 -->
     <div
       v-for="pid in visitedPlugins"
       :key="pid"
@@ -45,8 +50,10 @@ watch(() => props.activePlugin, (id) => {
       <PluginPanel :plugin-id="pid" />
     </div>
 
-    <!-- market / settings 覆盖在插件之上 -->
-    <MarketPanel v-if="view === 'market'" style="position: relative;" />
+    <!-- 各面板 -->
+    <TaskPanel v-if="view === 'tasks'" />
+    <LogPanel    v-else-if="view === 'logs'" />
+    <MarketPanel v-else-if="view === 'market'" style="position: relative;" />
     <SettingsPanel v-else-if="view === 'settings'" style="position: relative;" />
   </div>
 </template>

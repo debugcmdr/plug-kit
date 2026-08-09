@@ -104,12 +104,6 @@ async function cleanOrphanCache() {
           </n-space>
         </n-card>
       </n-tab-pane>
-
-      <n-tab-pane name="logs" tab="日志">
-        <n-card>
-          <n-button @click="message.info('日志功能开发中')">打开日志目录</n-button>
-        </n-card>
-      </n-tab-pane>
     </n-tabs>
   </div>
 </template>

@@ -245,6 +245,58 @@ fn log_error(msg: String) {
     logger::Logger::error(&msg);
 }
 
+/// 读取最近 N 行日志内容(用于日志查看器)。
+/// `lines`: 读取行数,默认 200,最大 2000。
+/// `level`: 过滤级别,空则全部。
+#[tauri::command]
+async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<String>, String> {
+    use std::io::{BufRead, BufReader};
+    let n = lines.unwrap_or(200).min(2000);
+    let level_filter = level.as_deref();
+
+    let log_dir = dirs::home_dir()
+        .ok_or("无法获取用户目录")?
+        .join(".plugkit")
+        .join("logs");
+
+    // 按文件名降序取最近的日志文件
+    let mut files: Vec<std::path::PathBuf> = if log_dir.is_dir() {
+        std::fs::read_dir(&log_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |ext| ext == "log"))
+                    .map(|e| e.path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+
+    let mut all_lines: Vec<String> = Vec::new();
+    for file in files {
+        let reader = BufReader::new(
+            std::fs::File::open(&file).map_err(|e| format!("打开日志文件: {}", e))?
+        );
+        let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        lines.reverse();
+        for line in lines {
+            if line.is_empty() { continue; }
+            if let Some(lv) = level_filter {
+                if !line.starts_with(&format!("[{}]", lv)) { continue; }
+            }
+            all_lines.push(line);
+            if all_lines.len() >= n { break; }
+        }
+        if all_lines.len() >= n { break; }
+    }
+    all_lines.reverse();
+    Ok(all_lines)
+}
+
 pub fn run() {
     env_logger::init();
     let builder = tauri::Builder::default()
@@ -274,6 +326,7 @@ pub fn run() {
             list_tasks,
             log_info,
             log_error,
+            log_read,
         ]);
     protocol::register_protocol(builder)
         .run(tauri::generate_context!())
