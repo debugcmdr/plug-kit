@@ -44,12 +44,13 @@ watch(() => props.activePlugin, (id) => {
     </div>
 
     <!-- 插件 iframe 常驻，始终在 DOM 中（不 v-show），用 visibility 控制显示/隐藏 -->
-    <!-- 这样 ResizeObserver 始终能测量到正确的容器尺寸 -->
+    <!-- 只有当前激活的插件 div 有 flex:1，其他不设 flex 避免空间均分 -->
     <div
       v-for="pid in visitedPlugins"
       :key="pid"
-      style="flex: 1; min-height: 0; overflow: hidden;"
-      :style="{ visibility: view === 'plugin' && activePlugin === pid ? 'visible' : 'hidden' }"
+      :style="view === 'plugin' && activePlugin === pid
+        ? { flex: '1 1 0%', minHeight: 0, overflow: 'hidden', visibility: 'visible' }
+        : { overflow: 'hidden', visibility: 'hidden' }"
     >
       <PluginPanel :plugin-id="pid" />
     </div>
