@@ -17,29 +17,58 @@ export async function fetchPlugins() {
   }
 }
 
-export async function fetchMarket() {
-  loading.value = true
-  try {
-    plugins.value = await invoke<PluginInfo[]>('market_list')
-  } finally {
-    loading.value = false
+// ---- 市场数据缓存 ----
+// 启动后只请求一次，之后用缓存；每 5 分钟后台刷新一次。
+let marketData: PluginInfo[] = []
+let marketLastFetched = 0
+const MARKET_CACHE_TTL_MS = 5 * 60 * 1000  // 5 分钟
+let marketPollTimer: ReturnType<typeof setInterval> | null = null
+
+export const marketPlugins = ref<PluginInfo[]>([])
+export const marketLoading = ref(false)
+
+export async function fetchMarket(force = false): Promise<PluginInfo[]> {
+  const now = Date.now()
+  if (!force && marketLastFetched > 0 && (now - marketLastFetched) < MARKET_CACHE_TTL_MS) {
+    return marketPlugins.value
   }
+  marketLoading.value = true
+  try {
+    marketData = await invoke<PluginInfo[]>('market_list')
+    marketPlugins.value = marketData
+    marketLastFetched = Date.now()
+  } catch (e) {
+    console.error('Failed to fetch market:', e)
+  } finally {
+    marketLoading.value = false
+  }
+  return marketPlugins.value
+}
+
+export function startMarketPoll() {
+  if (marketPollTimer) return
+  fetchMarket()  // 首次立即加载
+  marketPollTimer = setInterval(() => fetchMarket(), MARKET_CACHE_TTL_MS)
+}
+
+export function stopMarketPoll() {
+  if (marketPollTimer) { clearInterval(marketPollTimer); marketPollTimer = null }
 }
 
 export async function installPlugin(pluginId: string): Promise<InstallResult> {
   const r = await invoke<InstallResult>('install_plugin', { pluginId })
-  await fetchMarket()
   if (r.success) {
     installedVersion.value++
+    fetchMarket(true)  // 安装后强制刷新市场数据
   }
   return r
 }
 
 export async function uninstallPlugin(pluginId: string): Promise<InstallResult> {
   const r = await invoke<InstallResult>('uninstall_plugin', { pluginId })
-  await fetchMarket()
   if (r.success) {
     installedVersion.value++
+    fetchMarket(true)  // 卸载后强制刷新市场数据
   }
   return r
 }
