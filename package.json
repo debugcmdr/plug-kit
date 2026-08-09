@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:watch": "bash scripts/dev-watch.sh"
   },
   "dependencies": {
     "vue": "^3.4.21",
