@@ -8,7 +8,6 @@
 //! the plugins root).
 
 use std::borrow::Cow;
-use std::path::PathBuf;
 
 /// HTTP-like response for the custom protocol.
 #[derive(Clone, Copy)]
@@ -86,15 +85,29 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
                 let injected = if html.contains("plugkit-bridge.js") {
                     html.to_string()
                 } else {
+                    // 插件页面严格 CSP(插件是不可信代码,是主要威胁面):
+                    // - script 仅允许 plugkit: 同源 + 内联(插件 HTML 多为内联脚本)
+                    // - 禁止网络请求(connect-src 'none')——插件网络能力一律走后端桥接
+                    // - 禁止 object/frame/base 注入
+                    // 注:iframe 已去掉 allow-same-origin,origin 为 opaque,'self' 无法匹配
+                    // plugkit:// 资源,故 script/img/font 用 scheme-source 显式放行。
+                    let csp = "default-src 'none'; script-src plugkit: 'unsafe-inline'; \
+                              style-src 'unsafe-inline'; img-src plugkit: data: https:; \
+                              font-src plugkit: data:; connect-src 'none'; object-src 'none'; \
+                              base-uri 'none'; form-action 'none'";
+                    let meta = format!(
+                        r#"<meta http-equiv="Content-Security-Policy" content="{}">"#,
+                        csp
+                    );
                     let script = r#"<script src="/bridge.js"></script>"#;
                     // Insert right after <head> or at the start of <body>.
                     if html.to_lowercase().contains("<head") {
-                        html.replacen("<head>", &format!("<head>\n  {}", script), 1)
-                            .replacen("<head >", &format!("<head >\n  {}", script), 1)
+                        html.replacen("<head>", &format!("<head>\n  {}\n  {}", meta, script), 1)
+                            .replacen("<head >", &format!("<head >\n  {}\n  {}", meta, script), 1)
                     } else if html.to_lowercase().contains("<body") {
-                        html.replacen("<body>", &format!("<body>\n  {}", script), 1)
+                        html.replacen("<body>", &format!("<body>\n  {}\n  {}", meta, script), 1)
                     } else {
-                        format!("{}\n{}", script, html)
+                        format!("{}\n{}\n{}", meta, script, html)
                     }
                 };
                 let r = http_response(Status::Ok, "text/html", injected.as_bytes());
@@ -114,9 +127,4 @@ fn http_response(status: Status, content_type: &str, body: &[u8]) -> http::Respo
         .header("Content-Type", content_type)
         .body(Cow::Owned(body.to_vec()))
         .unwrap_or_else(|_| http::Response::new(Cow::Owned(Vec::new())))
-}
-
-/// Resolve `~/.plugkit/plugins/{id}/tool/index.html` to a `plugkit://` URL.
-pub fn plugin_iframe_url(plugin_id: &str) -> String {
-    format!("plugkit://plugin/{}/tool/index.html", plugin_id)
 }

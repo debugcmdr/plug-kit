@@ -18,7 +18,7 @@ async fn tool_runner_calls_download_cli_not_index() {
     // Invoke download plugin's no-arg command (returns usage JSON). If ToolRunner
     // wrongly executes index.html, this will fail with spawn/parse error.
     let runner = plugkit_lib::api::ToolRunner::new();
-    let result = runner.invoke("download", "download", serde_json::json!({ "url": "https://example.com" }), None).await;
+    let result = runner.invoke("download", "download", serde_json::json!({ "url": "https://example.com" }), None, None).await;
     // Even with a bad URL, the CLI should return a structured error (proving the
     // Python CLI ran), not a spawn failure.
     match result {

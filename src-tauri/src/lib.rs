@@ -97,7 +97,19 @@ pub async fn dialog_open_folder_inner(
 /// 供插件 iframe 的「打开保存路径」按钮调用。
 #[tauri::command]
 async fn open_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let p = std::path::PathBuf::from(&path);
+    // 支持 ~/ 前缀展开(插件 UI 的默认保存位置形如 ~/Downloads/PlugKit)
+    let expanded = if path.starts_with("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(&path[2..]))
+            .unwrap_or_else(|| std::path::PathBuf::from(&path))
+    } else {
+        std::path::PathBuf::from(&path)
+    };
+    let p = expanded;
+    // 空/无效路径:直接报错,绝不打开进程工作目录(cwd)——否则用户会莫名跳转到 src-tauri。
+    if p.as_os_str().is_empty() {
+        return Err("打开路径为空".into());
+    }
     let target = if p.is_dir() {
         p
     } else if let Some(parent) = p.parent() {
@@ -140,10 +152,15 @@ pub struct InstallResult {
     pub success: bool,
     pub plugin_id: String,
     pub message: String,
+    /// 结构化错误码(前端可据此区分场景而非解析 message 文本):
+    /// ALREADY_LATEST / DOWNGRADE_BLOCKED / BRIDGE_INCOMPATIBLE /
+    /// MIN_APP_VERSION / UNSIGNED_PLUGIN / INSTALL_OK 等。
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 #[tauri::command]
-async fn install_plugin(plugin_id: String, _release_url: Option<String>) -> Result<InstallResult, String> {
+async fn install_plugin(plugin_id: String) -> Result<InstallResult, String> {
     PLUGIN_MANAGER.install(&plugin_id).await
 }
 
@@ -188,6 +205,7 @@ async fn market_list() -> Result<Vec<PluginInfo>, String> {
 /// Force-refresh the remote marketplace manifest cache.
 #[tauri::command]
 async fn market_refresh() -> Result<(), String> {
+    manifest_fetcher::invalidate_market_cache();
     manifest_fetcher::fetch_market_manifests().await.map(|_| ())
 }
 
@@ -201,18 +219,6 @@ fn get_cache_stats() -> Result<serde_json::Value, String> {
 async fn clean_orphan_cache() -> Result<serde_json::Value, String> {
     let dc = dependency_cache::DependencyCache::new();
     dc.clean_orphans().await
-}
-
-#[tauri::command]
-fn get_settings() -> Result<serde_json::Value, String> {
-    let cm = config_mgr::ConfigMgr::new();
-    cm.get_settings().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_settings(settings: serde_json::Value) -> Result<(), String> {
-    let cm = config_mgr::ConfigMgr::new();
-    cm.set_settings(settings).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -313,6 +319,10 @@ pub fn run() {
         .setup(|app| {
             // 启动时预装默认工具(尚未安装时)
             preinstall::ensure_preinstalled(app.handle());
+            // 上次运行遗留的非终态任务标记为 interrupted(子进程已随退出消失)
+            tauri::async_runtime::spawn(async move {
+                task_queue::TaskQueue::recover().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -326,8 +336,6 @@ pub fn run() {
             get_home_dir,
             get_cache_stats,
             clean_orphan_cache,
-            get_settings,
-            set_settings,
             get_plugin_config,
             set_plugin_config,
             get_bridge_version,
@@ -338,6 +346,14 @@ pub fn run() {
             log_read,
         ]);
     protocol::register_protocol(builder)
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 应用退出:把仍在运行/排队/暂停的任务标记为 interrupted(落盘),
+            // 避免任务卡在 running 直到下次启动才被 recover。
+            if let tauri::RunEvent::Exit = event {
+                let _ = tauri::async_runtime::block_on(task_queue::TaskQueue::recover());
+                let _ = app_handle;
+            }
+        });
 }

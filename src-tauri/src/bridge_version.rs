@@ -5,6 +5,8 @@ pub const CURRENT_BRIDGE_VERSION: &str = "1.0.0";
 
 #[derive(Error, Debug)]
 pub enum BridgeError {
+    /// 预留:版本不匹配时构造。
+    #[allow(dead_code)]
     #[error("Version mismatch: required={required}, actual={actual}")]
     VersionMismatch { required: String, actual: String },
     #[error("Invalid semver: {0}")]

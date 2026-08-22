@@ -16,6 +16,19 @@ pub struct BridgeResponse {
     pub result: Result<serde_json::Value, String>,
 }
 
+/// 从插件调用参数中提取来源 URL(提取/下载类命令的 `{ "url": ... }`)。
+fn extract_url(params: &serde_json::Value) -> Option<String> {
+    params.get("url").and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+/// 重复提取时的提示文案(按已有任务状态区分「正在解析中」/「已解析完成」)。
+fn dedup_message(status: crate::task_queue::TaskStatus) -> String {
+    match status {
+        crate::task_queue::TaskStatus::Completed => "该链接已解析完成（可在任务中心查看）".to_string(),
+        _ => "该链接正在解析中，请勿重复提取".to_string(),
+    }
+}
+
 /// Route an iframe bridge message to the right backend service.
 ///
 /// This is the single entry point the plugin iframes talk to. It keeps the
@@ -43,7 +56,22 @@ async fn dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'command' in payload")?;
             let params = payload.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app)).await
+            // 提取去重:同 URL 已有活跃/已完成任务则直接提示,不重复创建(避免重复解析浪费)。
+            // 下载(download)命令不受此限,允许重复下载。
+            if command_name != "download" {
+                if let Some(url) = extract_url(&params) {
+                    if let Some(existing) = crate::task_queue::TaskQueue::find_duplicate(plugin_id, &url).await {
+                        return Err(dedup_message(existing.status));
+                    }
+                }
+            }
+            // 任务中心闭环：无 task_id 时先创建任务，再把同一 id 透传给 ToolRunner。
+            // （此前 ToolRunner 内部另起 id，导致任务中心永远 pending、取消杀不掉进程。）
+            let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => crate::task_queue::TaskQueue::create(plugin_id, command_name, extract_url(&params)).await,
+            };
+            crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app), Some(task_id)).await
         }
 
         // Task queue
@@ -52,7 +80,7 @@ async fn dispatch(
                 .get("type")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'type'")?;
-            Ok(serde_json::json!({ "task_id": crate::task_queue::TaskQueue::create(plugin_id, task_type).await }))
+            Ok(serde_json::json!({ "task_id": crate::task_queue::TaskQueue::create(plugin_id, task_type, None).await }))
         }
         "task_cancel" => {
             let task_id = payload
@@ -69,6 +97,14 @@ async fn dispatch(
                 .ok_or("Missing 'task_id'")?;
             crate::task_queue::TaskQueue::pause(task_id).await;
             Ok(serde_json::json!({ "paused": true }))
+        }
+        "task_resume" => {
+            let task_id = payload
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'task_id'")?;
+            crate::task_queue::TaskQueue::resume(task_id).await;
+            Ok(serde_json::json!({ "resumed": true }))
         }
 
         // Config (per-plugin settings)
@@ -130,7 +166,20 @@ async fn dispatch(
         other => {
             let params = payload.get("params").cloned()
                 .unwrap_or_else(|| payload.clone());
-            crate::TOOL_RUNNER.invoke(plugin_id, other, params, Some(app)).await
+            // 提取去重:同 URL 已有活跃/已完成任务则提示,不重复创建(下载命令除外)。
+            if other != "download" {
+                if let Some(url) = extract_url(&params) {
+                    if let Some(existing) = crate::task_queue::TaskQueue::find_duplicate(plugin_id, &url).await {
+                        return Err(dedup_message(existing.status));
+                    }
+                }
+            }
+            // 与 invoke_command 相同:统一 task_id,保证任务中心闭环。
+            let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => crate::task_queue::TaskQueue::create(plugin_id, other, extract_url(&params)).await,
+            };
+            crate::TOOL_RUNNER.invoke(plugin_id, other, params, Some(app), Some(task_id)).await
         }
     }
 }

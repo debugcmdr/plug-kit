@@ -64,7 +64,8 @@
     task: {
       submit: function(type, params) { return invoke('task_submit', { type: type, params: params }); },
       cancel: function(task_id) { return invoke('task_cancel', { task_id: task_id }); },
-      pause: function(task_id) { return invoke('task_pause', { task_id: task_id }); }
+      pause: function(task_id) { return invoke('task_pause', { task_id: task_id }); },
+      resume: function(task_id) { return invoke('task_resume', { task_id: task_id }); }
     },
     log: {
       info: function(msg) { return invoke('log_info', { msg: msg }); },

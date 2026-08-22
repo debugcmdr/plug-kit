@@ -57,7 +57,6 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
             std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = std::fs::metadata(&from) {
                     let _ = std::fs::set_permissions(&to, meta.permissions());
                 }

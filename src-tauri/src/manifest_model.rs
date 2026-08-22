@@ -21,8 +21,6 @@ pub struct Manifest {
     pub plugin_dependencies: Option<std::collections::HashMap<String, String>>,
     #[serde(rename = "bridgeVersion")]
     pub bridge_version: String,
-    #[serde(default, rename = "fileAssociations")]
-    pub file_associations: Option<Vec<String>>,
     #[serde(default, rename = "minAppVersion")]
     pub min_app_version: Option<String>,
     #[serde(default, rename = "expectedSha256")]

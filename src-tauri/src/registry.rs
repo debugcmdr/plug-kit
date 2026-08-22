@@ -9,8 +9,6 @@ use crate::security::SecurityError;
 pub struct Registry {
     #[serde(rename = "_v")]
     pub version: u32,
-    #[serde(rename = "_disk_quota_mb")]
-    pub disk_quota_mb: u64,
     #[serde(default)]
     pub ffmpeg: HashMap<String, HashMap<String, DepEntry>>,
     #[serde(default)]
@@ -34,8 +32,7 @@ pub struct DepEntry {
 impl Default for Registry {
     fn default() -> Self {
         Self {
-            version: 3,
-            disk_quota_mb: 500,
+            version: 4,
             ffmpeg: HashMap::new(),
             yt_dlp: HashMap::new(),
             other: HashMap::new(),

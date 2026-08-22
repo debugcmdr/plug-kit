@@ -15,6 +15,44 @@ pub enum SecurityError {
     PluginNotFound(String),
     #[error("Subprocess error: {0}")]
     SubprocessError(String),
+    #[error("Invalid plugin signature: {0}")]
+    SignatureInvalid(String),
+}
+
+/// 官方插件签名公钥(base64 编码的 32 字节 Ed25519 公钥)。
+///
+/// - `None`:未配置信任锚 → 跳过强制验签(仍按 sha256 校验完整性)。
+/// - `Some(key)`:市场清单带 `signature` 的插件包**必须**验签通过才能安装。
+///
+/// 生成方式:`./scripts/gen-sign-key.sh`(输出公钥 base64,填入此处)。
+pub const OFFICIAL_PUBLIC_KEY: Option<&str> = None;
+
+/// 验证插件包签名(Ed25519,对下载的原始 zip 字节验签)。
+/// `signature_b64` / `public_key_b64` 均为 base64 编码。
+pub fn verify_plugin_signature(
+    data: &[u8],
+    signature_b64: &str,
+    public_key_b64: &str,
+) -> Result<(), SecurityError> {
+    use base64::Engine;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64.trim())
+        .map_err(|e| SecurityError::SignatureInvalid(format!("bad signature base64: {}", e)))?;
+    let sig = Signature::from_slice(&sig_bytes)
+        .map_err(|_| SecurityError::SignatureInvalid("bad signature length".into()))?;
+
+    let key_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(public_key_b64.trim())
+        .map_err(|e| SecurityError::SignatureInvalid(format!("bad key base64: {}", e)))?
+        .try_into()
+        .map_err(|_| SecurityError::SignatureInvalid("bad public key length".into()))?;
+    let key = VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| SecurityError::SignatureInvalid("bad public key".into()))?;
+
+    key.verify(data, &sig)
+        .map_err(|_| SecurityError::SignatureInvalid("verification failed".into()))
 }
 
 pub fn validate_unzip_path(base: &Path, entry_path: &Path) -> Result<PathBuf, SecurityError> {
@@ -72,6 +110,8 @@ pub fn validate_sha256(data: &[u8], expected: &str) -> Result<(), SecurityError>
     Ok(())
 }
 
+/// 校验插件路径位于用户目录内(预留 API,供将来扩展使用)。
+#[allow(dead_code)]
 pub fn validate_plugin_path(plugin_path: &Path) -> Result<(), SecurityError> {
     let base = dirs::home_dir()
         .ok_or_else(|| SecurityError::PathOutsideRoot("Cannot determine home directory".into()))?;
@@ -82,4 +122,50 @@ pub fn validate_plugin_path(plugin_path: &Path) -> Result<(), SecurityError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    /// 固定种子的测试密钥对(确定性,不依赖随机源)。
+    fn test_signing_key() -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[0] = 42;
+        SigningKey::from_bytes(&seed)
+    }
+
+    #[test]
+    fn signature_roundtrip_ok() {
+        let signing = test_signing_key();
+        let verifying = signing.verifying_key();
+        let msg = b"plugin zip bytes 0123456789";
+        let sig = signing.sign(msg);
+
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(verifying.to_bytes());
+
+        assert!(verify_plugin_signature(msg, &sig_b64, &key_b64).is_ok());
+    }
+
+    #[test]
+    fn signature_tampered_rejected() {
+        let signing = test_signing_key();
+        let verifying = signing.verifying_key();
+        let msg = b"plugin zip bytes";
+        let sig = signing.sign(msg);
+
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(verifying.to_bytes());
+
+        assert!(verify_plugin_signature(b"tampered bytes", &sig_b64, &key_b64).is_err());
+    }
+
+    #[test]
+    fn signature_bad_inputs_rejected() {
+        assert!(verify_plugin_signature(b"x", "!!!not-base64!!!", "AAAA").is_err());
+        assert!(verify_plugin_signature(b"x", "c2ln", "AAAA").is_err()); // 签名长度不对
+    }
 }

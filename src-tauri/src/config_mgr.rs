@@ -4,90 +4,47 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::security::SecurityError;
 
+/// 插件级配置管理(~/.plugkit/configs/{plugin_id}/settings.json,key-value 字符串)。
+/// 全局设置(下载镜像等)已移除——镜像改为内置候选池 + 自动降级,不再需要用户配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Settings {
-    pub download_mirrors: Vec<MirrorConfig>,
-    pub system_proxy: Option<ProxyConfig>,
-    pub disk_quota_mb: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MirrorConfig {
-    pub name: String,
-    pub prefix: String,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProxyConfig {
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            download_mirrors: vec![
-                MirrorConfig { name: "ghproxy".into(), prefix: "https://ghproxy.com/".into(), enabled: true },
-                MirrorConfig { name: "gh-proxy".into(), prefix: "https://gh-proxy.com/".into(), enabled: true },
-                MirrorConfig { name: "custom".into(), prefix: String::new(), enabled: false },
-            ],
-            system_proxy: None,
-            disk_quota_mb: 500,
-        }
-    }
+pub struct PluginConfig {
+    pub values: HashMap<String, String>,
 }
 
 pub struct ConfigMgr {
-    settings_path: PathBuf,
+    configs_root: PathBuf,
 }
 
 impl ConfigMgr {
     pub fn new() -> Self {
         Self {
-            settings_path: dirs::home_dir()
+            configs_root: dirs::home_dir()
                 .unwrap_or_default()
                 .join(".plugkit")
-                .join("settings.json"),
+                .join("configs"),
         }
     }
 
-    pub fn get_settings(&self) -> Result<serde_json::Value, SecurityError> {
-        let content = if self.settings_path.exists() {
-            fs::read_to_string(&self.settings_path).unwrap_or_default()
-        } else {
-            serde_json::to_string_pretty(&Settings::default()).unwrap_or_default()
-        };
-        serde_json::from_str(&content).map_err(|e| {
-            SecurityError::PathOutsideRoot(format!("Parse settings: {}", e))
-        })
-    }
-
-    pub fn set_settings(&self, settings: serde_json::Value) -> Result<(), SecurityError> {
-        let settings_dir = self.settings_path.parent().unwrap();
-        fs::create_dir_all(settings_dir).map_err(|e| {
-            SecurityError::PathOutsideRoot(format!("Create settings dir: {}", e))
-        })?;
-        let tmp = self.settings_path.with_extension("json.tmp");
-        let content = serde_json::to_string_pretty(&settings).map_err(|e| {
-            SecurityError::PathOutsideRoot(format!("Serialize settings: {}", e))
-        })?;
-        fs::write(&tmp, content).map_err(|e| {
-            SecurityError::PathOutsideRoot(format!("Write settings: {}", e))
-        })?;
-        fs::rename(&tmp, &self.settings_path).map_err(|e| {
-            SecurityError::PathOutsideRoot(format!("Rename settings: {}", e))
-        })
+    /// 校验 plugin_id 只含安全字符(字母/数字/下划线/连字符)。
+    /// 拒绝路径分隔符与 `..`,防止插件 id 被用于路径穿越读写任意目录。
+    fn validate_plugin_id(plugin_id: &str) -> Result<(), SecurityError> {
+        if plugin_id.is_empty()
+            || plugin_id.contains("..")
+            || plugin_id.contains('/')
+            || plugin_id.contains('\\')
+            || !plugin_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(SecurityError::PathOutsideRoot(format!(
+                "Invalid plugin id: {:?}",
+                plugin_id
+            )));
+        }
+        Ok(())
     }
 
     pub fn get(&self, plugin_id: &str, key: &str) -> Result<Option<String>, SecurityError> {
-        let config_dir = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".plugkit")
-            .join("configs")
-            .join(plugin_id);
+        Self::validate_plugin_id(plugin_id)?;
+        let config_dir = self.configs_root.join(plugin_id);
         let config_file = config_dir.join("settings.json");
         if !config_file.exists() {
             return Ok(None);
@@ -102,11 +59,8 @@ impl ConfigMgr {
     }
 
     pub fn set(&self, plugin_id: &str, key: &str, value: &str) -> Result<(), SecurityError> {
-        let config_dir = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".plugkit")
-            .join("configs")
-            .join(plugin_id);
+        Self::validate_plugin_id(plugin_id)?;
+        let config_dir = self.configs_root.join(plugin_id);
         fs::create_dir_all(&config_dir).map_err(|e| {
             SecurityError::PathOutsideRoot(format!("Create config dir: {}", e))
         })?;
