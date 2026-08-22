@@ -22,7 +22,7 @@
       "output": "json"
     },
     "convert": {
-      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--preset", "{preset}", "--quality", "{quality}", "--audio-bitrate", "{audio_bitrate}"],
+      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--quality", "{quality}", "--audio-bitrate", "{audio_bitrate}"],
       "output": "progress+json"
     }
   },

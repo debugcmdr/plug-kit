@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 # ---- 协议辅助(与主程序 plugkit 协议对齐) ----
-def progress(percent, speed=None, eta=None, message=None):
+def progress(percent, speed=None, eta=None, message=None, file_name=None, output_path=None):
     line = {"type": "progress", "percent": percent}
     if speed:
         line["speed"] = speed
@@ -20,6 +20,11 @@ def progress(percent, speed=None, eta=None, message=None):
         line["eta"] = eta
     if message:
         line["message"] = message
+    # 任务中心据此展示文件名与「打开输出文件夹」按钮(与 convert 插件对齐)。
+    if file_name:
+        line["file_name"] = file_name
+    if output_path:
+        line["output_path"] = output_path
     print(json.dumps(line, ensure_ascii=False), flush=True)
 
 
@@ -102,15 +107,45 @@ def diagnose_ytdlp_error(err_lines, last_lines, code):
     return f"下载失败(yt-dlp 退出码 {code}){(':' + detail) if detail else ''}"
 
 
+def guess_height_from_url(url):
+    """从下载 URL 文件名推断清晰度(如 402946-720p.mp4 → 720)。
+
+    部分站点(hanime1 等)未把分辨率写入结构化字段,但下载地址文件名含
+    `{id}-{清晰度}p.{ext}`,此处提取用于展示与排序。提取失败返回 None。"""
+    if not url:
+        return None
+    # 优先匹配分隔符后紧跟的数字+p(如 -720p. / _1080p/ ),避免命中 URL 里其他数字
+    m = re.search(r"[-_/](\d{3,4})p", url)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d{3,4})p", url)
+    return int(m.group(1)) if m else None
+
+
 # ---------------------------------------------------------------- 提取信息
 def info(url):
     """提取资源信息:标题、分类可用格式列表(清晰度/大小)。"""
     # -J/--dump-json 输出完整 JSON(比 --print json 更可靠)
-    cmd = [YTDLP, "--skip-download", "--no-warnings", "-J", url]
+    # --socket-timeout 15 + --retries 3:网络抖动时自动重试,避免默认 20s 读超时直接失败。
+    cmd = [YTDLP, "--skip-download", "--no-warnings",
+           "--socket-timeout", "15", "--retries", "3", "-J", url]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-    except subprocess.TimeoutExpired:
-        error("TIMEOUT", "提取信息超时")
+    except subprocess.TimeoutExpired as e:
+        # 计时仅覆盖 yt-dlp 拉取元数据(解析),不含 Rust 端依赖下载阶段;
+        # 此处明确告知用户已排除依赖环节,避免误判为"依赖没下好"而重复提取。
+        tail = ""
+        if e.stderr:
+            lines = [l for l in e.stderr.strip().splitlines() if l]
+            if lines:
+                tail = lines[-1][-240:]
+        if tail and any(k in tail.lower() for k in ("timed out", "timeout", "network")):
+            reason = "网络超时/连接失败(站点可能在境外或被反爬)。依赖已就绪,可重试或换链接。"
+        elif tail:
+            reason = f"解析超时:{tail}"
+        else:
+            reason = "解析超时(yt-dlp 在 90s 内未取得元数据,可能是站点反爬或地区限制)。依赖已就绪,可重试或换链接。"
+        error("TIMEOUT", f"解析超时(已排除依赖下载,仅计解析时长):{reason}")
         return
     except FileNotFoundError:
         error("YTDLP_MISSING", "未找到 yt-dlp,请先安装共享依赖")
@@ -120,10 +155,14 @@ def info(url):
         error("YTDLP_ERROR", diagnose_ytdlp_error([err], [err], proc.returncode))
         return
     try:
-        meta = json.loads(proc.stdout.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError):
-        error("PARSE_ERROR", "无法解析 yt-dlp 输出")
-        return
+        meta = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        # 兼容末尾有空白/警告行的情形:取最后一行再试
+        try:
+            meta = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            error("PARSE_ERROR", "无法解析 yt-dlp 输出")
+            return
 
     # 整理视频格式列表(去重、按清晰度排序)
     formats = []
@@ -141,16 +180,20 @@ def info(url):
 
         is_video = vcodec != "none"
         if is_video:
-            key = (height, ext)
+            # 站点未提供结构化清晰度(hanime1 等 height 全为 null)时,
+            # 从下载 URL 推断: https://vdownload.hembed.com/402946-720p.mp4 → 720。
+            display_height = height or guess_height_from_url(f.get("url") or "")
+            key = (display_height, ext)
             if key in seen:
                 continue
             seen.add(key)
-            label = f"{height}p" if height else (note or "未知清晰度")
+            label = f"{display_height}p" if display_height else (note or f"格式 {fmt_id}")
             formats.append({
                 "id": fmt_id, "type": "video", "label": label,
-                "ext": ext, "size": size, "height": height, "note": note,
+                "ext": ext, "size": size,
+                "height": display_height, "note": note,
             })
-    # 按清晰度降序
+    # 按清晰度降序(未知清晰度排最后)
     formats.sort(key=lambda f: f["height"] or 0, reverse=True)
 
     # 音频格式(取最佳音频的 ext)
@@ -175,11 +218,16 @@ def info(url):
 
 
 # ---------------------------------------------------------------- 下载
-def _run_ytdlp(cmd, url, suffix=""):
+def _run_ytdlp(cmd, url, suffix="", out_dir=None):
     """执行 yt-dlp,流式解析进度并输出。返回 (ok, files)。
     失败时给出真实原因(cookies/JS运行时/格式/网络等),而非笼统退出码。"""
-    os.makedirs(os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else ".", exist_ok=True)
-    progress(0, message=f"准备下载{suffix}...")
+    # 网络健壮性:抖动的网络(国内访问境外/反爬站点)下默认 20s 读超时极易失败,
+    # 统一注入 socket-timeout + 重试,失败率显著下降。
+    cmd = cmd[:1] + ["--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3"] + cmd[1:]
+    base_dir = out_dir or (os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else ".")
+    os.makedirs(base_dir, exist_ok=True)
+    # 一开始就把输出目录上报给任务中心:运行中即可点「打开输出文件夹」。
+    progress(0, message=f"准备下载{suffix}...", output_path=base_dir)
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -192,7 +240,8 @@ def _run_ytdlp(cmd, url, suffix=""):
         error("YTDLP_ERROR", str(e))
         return False, []
 
-    out_dir = None
+    dst_dir = None
+    file_name = None       # 下载文件名(解析 Destination 行获得,任务中心展示)
     err_lines = []          # 收集错误上下文
     last_lines = []         # 保留最后几行(下载完成后错误常在末尾)
     for line in proc.stdout:
@@ -213,14 +262,17 @@ def _run_ytdlp(cmd, url, suffix=""):
                 speed=f"{speed_m.group(1)}{speed_m.group(2)}" if speed_m else None,
                 eta=eta_m.group(1) if eta_m else None,
                 message=f"下载中{suffix} {pct:.0f}%",
+                file_name=file_name,
+                output_path=base_dir,
             )
         elif line.startswith("[download] Destination:"):
             dst = line.split("Destination:", 1)[1].strip()
-            out_dir = os.path.dirname(dst) or "."
+            dst_dir = os.path.dirname(dst) or "."
+            file_name = os.path.basename(dst)
         elif line.startswith("[download] 100%"):
-            progress(100, message="下载完成")
+            progress(100, message="下载完成", file_name=file_name, output_path=base_dir)
         elif "has already been downloaded" in line:
-            progress(100, message="已存在,跳过下载")
+            progress(100, message="已存在,跳过下载", file_name=file_name, output_path=base_dir)
         elif line.startswith("ERROR") or "Error" in line or "error" in line:
             err_lines.append(line)
 
@@ -229,10 +281,11 @@ def _run_ytdlp(cmd, url, suffix=""):
         error("YTDLP_ERROR", diagnose_ytdlp_error(err_lines, last_lines, proc.returncode))
         return False, []
 
-    # 收集输出文件
+    # 收集输出文件:优先用已知输出目录(已存在文件被跳过时不会出现 Destination: 行)
     files = []
-    if out_dir and os.path.isdir(out_dir):
-        files = sorted(os.listdir(out_dir))
+    collect_dir = out_dir or dst_dir
+    if collect_dir and os.path.isdir(collect_dir):
+        files = sorted(os.listdir(collect_dir))
     return True, files
 
 
@@ -248,7 +301,7 @@ def download(url, category, quality, output_dir, extra=""):
         if quality and quality != "best":
             cmd += ["-f", f"bestaudio[abr<={quality}]/bestaudio/best"]
         cmd.append(url)
-        ok, files = _run_ytdlp(cmd, url, suffix=" 提取音频")
+        ok, files = _run_ytdlp(cmd, url, suffix=" 提取音频", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 
@@ -257,7 +310,7 @@ def download(url, category, quality, output_dir, extra=""):
         cmd = [YTDLP, "--newline", "--skip-download", "--write-thumbnail",
                "--convert-thumbnails", "jpg", "-o", pattern]
         cmd.append(url)
-        ok, files = _run_ytdlp(cmd, url, suffix=" 图片")
+        ok, files = _run_ytdlp(cmd, url, suffix=" 图片", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 
@@ -268,7 +321,7 @@ def download(url, category, quality, output_dir, extra=""):
             cmd += ["--wait-for-video", "5"]
             cmd += ["--live-from-start"] if extra == "from_start" else []
         cmd.append(url)
-        ok, files = _run_ytdlp(cmd, url, suffix=" 直播")
+        ok, files = _run_ytdlp(cmd, url, suffix=" 直播", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 
@@ -288,7 +341,7 @@ def download(url, category, quality, output_dir, extra=""):
             fmt = "bestvideo+bestaudio/best"
         cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
         cmd.append(url)
-        ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}")
+        ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 

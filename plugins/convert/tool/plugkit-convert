@@ -11,13 +11,35 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 
-def progress(percent, message=None):
+def progress(percent, message=None, speed=None, eta=None, file_name=None, output_path=None):
     line = {"type": "progress", "percent": percent}
     if message:
         line["message"] = message
+    if speed:
+        line["speed"] = speed
+    if eta:
+        line["eta"] = eta
+    if file_name:
+        line["file_name"] = file_name
+    if output_path:
+        line["output_path"] = output_path
     print(json.dumps(line, ensure_ascii=False), flush=True)
+
+
+def format_hms(seconds):
+    """秒数 → HH:MM:SS / MM:SS(用于 ETA 倒计时)。"""
+    seconds = int(round(seconds))
+    if seconds < 0:
+        seconds = 0
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 
 def result(data):
@@ -87,8 +109,9 @@ def probe_duration(path):
         return 0
 
 
-def run_with_progress(cmd, duration, label):
-    """执行 ffmpeg,流式解析 time= 进度。"""
+def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
+    """执行 ffmpeg,流式解析 time=/speed= 进度,并估算剩余时间(ETA)。
+    file_name/output_path 随进度上报,任务中心据此展示转换文件名与"打开输出文件夹"入口。"""
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -98,15 +121,27 @@ def run_with_progress(cmd, duration, label):
         error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
         return None
 
-    last_pct = 0
+    last_pct = -1.0
+    last_report = time.time()
     for line in proc.stdout:
         m = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
+        s = re.search(r"speed=\s*([\d.]+)x", line)
+        speed = float(s.group(1)) if s else None
         if m and duration > 0:
             elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
             pct = min(99.0, (elapsed / duration) * 100)
-            if pct - last_pct >= 1:
-                progress(pct, message=f"{label} {pct:.0f}%")
+            # 剩余时长估算:剩余媒体时长 ÷ 当前处理速度(无速度则按实时计)。
+            remaining = max(0.0, duration - elapsed)
+            eta = remaining / speed if (speed and speed > 0) else remaining
+            eta_str = format_hms(eta)
+            speed_str = f"{speed:.2f}x" if speed else None
+            now = time.time()
+            # 1% 变化 或 每 2 秒 至少上报一次,保证 ETA 平滑刷新。
+            if pct - last_pct >= 1 or (now - last_report) >= 2.0:
+                progress(pct, message=label, speed=speed_str, eta=eta_str,
+                         file_name=file_name, output_path=output_path)
                 last_pct = pct
+                last_report = now
 
     proc.wait()
     if proc.returncode != 0:
@@ -115,10 +150,58 @@ def run_with_progress(cmd, duration, label):
     return True
 
 
+# ---------------------------------------------------------------- 输出路径安全化
+def resolve_output(input_path, output_path):
+    """安全化输出路径,杜绝数据丢失。绝不覆盖任何已存在文件。
+
+    场景1(同路径): MP4→MP4 且输出==输入 —— ffmpeg 读改写同一文件会失败/损坏,
+                  改为同目录 `_converted` 后缀。
+    场景2(同名冲突): 设置了保存目录时,不同目录的同名文件(/a/1.mp4 与 /b/1.mp4)
+                  都会映射到 saveDir/1.mp4,两个任务并发写同一路径,后完成的覆盖
+                  先完成的 → 输出已存在时自动追加 (1)(2)… 序号。
+    """
+    inp = os.path.abspath(input_path)
+    out = os.path.abspath(output_path)
+    if out == inp:
+        d = os.path.dirname(out)
+        base = os.path.splitext(os.path.basename(out))[0]
+        ext = os.path.splitext(out)[1]
+        return _unique_path(os.path.join(d, f"{base}_converted{ext}"))
+    if os.path.exists(out):
+        return _unique_path(out)
+    return output_path
+
+
+def _unique_path(path):
+    """若 path 已存在,在文件名后追加 (1)、(2)… 直到不冲突。"""
+    if not os.path.exists(path):
+        return path
+    d = os.path.dirname(os.path.abspath(path))
+    base = os.path.splitext(os.path.basename(path))[0]
+    ext = os.path.splitext(path)[1]
+    i = 1
+    while True:
+        cand = os.path.join(d, f"{base} ({i}){ext}")
+        if not os.path.exists(cand):
+            return cand
+        i += 1
+
+
+def ensure_output_dir(output_path):
+    """确保输出目录存在(用户选择的保存目录被删除时不会让 ffmpeg 直接失败)。"""
+    d = os.path.dirname(os.path.abspath(output_path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+
+
 # ---------------------------------------------------------------- 视频转换
 def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None):
+    output_path = resolve_output(input_path, output_path)
+    ensure_output_dir(output_path)
     duration = probe_duration(input_path)
-    progress(0, message=f"开始转换视频 {os.path.basename(input_path)}...")
+    fname = os.path.basename(output_path)
+    progress(0, message=f"开始转换视频 {os.path.basename(input_path)}...",
+             file_name=fname, output_path=output_path)
 
     ext = os.path.splitext(output_path)[1].lower()
     preset_map = {"fast": "veryfast", "medium": "medium", "slow": "slow"}
@@ -151,10 +234,10 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
                     "-crf", crf or "23", "-c:a", "aac"]
         cmd.append(output_path)
 
-    ok = run_with_progress(cmd, duration, "转换中")
+    ok = run_with_progress(cmd, duration, "转换中", file_name=fname, output_path=output_path)
     if ok is None:
         return
-    progress(100, message="转换完成")
+    progress(100, message="转换完成", file_name=fname, output_path=output_path)
     result({
         "category": "video",
         "input": input_path,
@@ -165,8 +248,12 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
 
 # ---------------------------------------------------------------- 音频转换
 def convert_audio(input_path, output_path, audio_bitrate=None):
+    output_path = resolve_output(input_path, output_path)
+    ensure_output_dir(output_path)
     duration = probe_duration(input_path)
-    progress(0, message=f"开始转换音频 {os.path.basename(input_path)}...")
+    fname = os.path.basename(output_path)
+    progress(0, message=f"开始转换音频 {os.path.basename(input_path)}...",
+             file_name=fname, output_path=output_path)
 
     ext = os.path.splitext(output_path)[1].lower()
     codec_map = {
@@ -188,10 +275,10 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
         cmd += ["-b:a", audio_bitrate or "128k"]
     cmd.append(output_path)
 
-    ok = run_with_progress(cmd, duration, "转换中")
+    ok = run_with_progress(cmd, duration, "转换中", file_name=fname, output_path=output_path)
     if ok is None:
         return
-    progress(100, message="转换完成")
+    progress(100, message="转换完成", file_name=fname, output_path=output_path)
     result({
         "category": "audio",
         "input": input_path,
@@ -212,7 +299,10 @@ def has_encoder(name):
 
 # ---------------------------------------------------------------- 图片转换
 def convert_image(input_path, output_path, quality="90"):
-    progress(0, message=f"开始转换图片 {os.path.basename(input_path)}...")
+    output_path = resolve_output(input_path, output_path)
+    ensure_output_dir(output_path)
+    progress(0, message=f"开始转换图片 {os.path.basename(input_path)}...",
+             file_name=os.path.basename(output_path), output_path=output_path)
 
     ext = os.path.splitext(output_path)[1].lower()
     cmd = [FFMPEG, "-y", "-i", input_path]
@@ -245,7 +335,8 @@ def convert_image(input_path, output_path, quality="90"):
         error("FFMPEG_ERROR", proc.stderr.strip()[-300:] or "ffmpeg 转换失败")
         return
 
-    progress(100, message="转换完成")
+    progress(100, message="转换完成",
+             file_name=os.path.basename(output_path), output_path=output_path)
     result({
         "category": "image",
         "input": input_path,
