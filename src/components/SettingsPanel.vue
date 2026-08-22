@@ -1,26 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Settings, CacheStats } from '../types'
+import type { CacheStats } from '../types'
 import { useMessage } from 'naive-ui'
+import AppIcon from './AppIcon.vue'
 
 const message = useMessage()
-const settings = ref<Settings>({
-  download_mirrors: [],
-  disk_quota_mb: 500
-})
 const cacheStats = ref<CacheStats | null>(null)
 
 // 应用版本从 tauri.conf.json 编译注入（通过环境变量）
 const APP_VERSION = import.meta.env.VITE_APP_VERSION || '0.1.0'
-
-async function loadSettings() {
-  try {
-    settings.value = await invoke<Settings>('get_settings')
-  } catch (e) {
-    console.error('Failed to load settings:', e)
-  }
-}
 
 async function loadCacheStats() {
   try {
@@ -30,18 +19,7 @@ async function loadCacheStats() {
   }
 }
 
-onMounted(async () => {
-  await Promise.all([loadSettings(), loadCacheStats()])
-})
-
-async function saveSettings() {
-  try {
-    await invoke('set_settings', { settings: JSON.parse(JSON.stringify(settings.value)) })
-    message.success('设置已保存')
-  } catch (e) {
-    message.error(`保存失败: ${e}`)
-  }
-}
+onMounted(loadCacheStats)
 
 async function cleanOrphanCache() {
   try {
@@ -66,57 +44,19 @@ async function openDataDir() {
 
 <template>
   <div style="padding: 24px; display: flex; flex-direction: column; gap: 20px;">
-    <n-h2 style="margin: 0;">设置</n-h2>
-
-    <!-- 下载镜像 -->
-    <n-card title="下载镜像">
-      <n-form :model="settings" label-placement="left" label-width="100">
-        <n-form-item label="磁盘配额">
-          <n-input-number v-model:value="settings.disk_quota_mb" :min="100" :max="10000" />
-          <span style="margin-left: 8px; color: var(--n-text-color-3); font-size: 13px;">MB</span>
-        </n-form-item>
-
-        <n-form-item label="镜像源列表">
-          <div style="width: 100%;">
-            <div
-              v-for="mirror in settings.download_mirrors"
-              :key="mirror.name"
-              style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--n-border-color);"
-            >
-              <span style="width: 60px; flex-shrink: 0; font-size: 13px; color: var(--n-text-color-2);">{{ mirror.name }}</span>
-              <n-input
-                v-model:value="mirror.prefix"
-                placeholder="镜像前缀，留空=原始地址"
-                size="small"
-                style="flex: 1;"
-              />
-              <n-switch
-                :value="mirror.enabled"
-                size="small"
-                @update:value="(v: boolean) => { mirror.enabled = v }"
-              />
-              <span style="font-size: 12px; color: var(--n-text-color-3); width: 36px; text-align: center;">
-                {{ mirror.enabled ? '启用' : '禁用' }}
-              </span>
-            </div>
-          </div>
-        </n-form-item>
-
-        <n-form-item>
-          <n-button type="primary" @click="saveSettings">保存设置</n-button>
-        </n-form-item>
-      </n-form>
-    </n-card>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <span style="color:var(--n-primary-color); display:flex;"><AppIcon name="settings" :size="20" /></span>
+      <n-h2 style="margin: 0;">设置</n-h2>
+    </div>
 
     <!-- 依赖缓存 -->
     <n-card title="依赖缓存">
       <n-descriptions v-if="cacheStats" :column="3" label-placement="left" size="small">
         <n-descriptions-item label="已用空间">
-          <span :style="{ color: cacheStats.total_size_mb > cacheStats.quota_mb * 0.8 ? '#f53f3f' : 'inherit' }">
+          <span>
             {{ cacheStats.total_size_mb.toFixed(1) }} MB
           </span>
         </n-descriptions-item>
-        <n-descriptions-item label="配额限制">{{ cacheStats.quota_mb }} MB</n-descriptions-item>
         <n-descriptions-item label="缓存条目">{{ cacheStats.entry_count }} 个</n-descriptions-item>
       </n-descriptions>
       <n-space style="margin-top: 16px;">

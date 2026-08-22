@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import AppIcon from './AppIcon.vue'
 
 const rawLines = ref<string[]>([])
 const loading = ref(false)
@@ -53,10 +54,15 @@ function lineClass(line: string) {
   <div style="padding: 20px 24px 12px; display:flex; flex-direction:column; gap:10px; height:100%;">
     <!-- 工具栏 -->
     <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
-      <n-h3 style="margin:0; font-size:16px;">日志</n-h3>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="color:var(--n-primary-color); display:flex;"><AppIcon name="logs" :size="18" /></span>
+        <n-h3 style="margin:0; font-size:16px;">日志</n-h3>
+      </div>
       <n-space size="small">
-        <n-button size="small" quaternary @click="fetchLogs">刷新</n-button>
-        <n-button size="small" quaternary type="error" @click="clearLogs">清空</n-button>
+        <n-button size="small" quaternary @click="fetchLogs">
+          <template #icon><AppIcon name="refresh" :size="14" /></template>刷新</n-button>
+        <n-button size="small" quaternary type="error" @click="clearLogs">
+          <template #icon><AppIcon name="trash" :size="14" /></template>清空</n-button>
         <n-tag
           :type="autoScroll ? 'success' : 'default'"
           round size="small"

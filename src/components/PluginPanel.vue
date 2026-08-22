@@ -41,7 +41,7 @@ onMounted(async () => {
     </div>
 
     <!-- 内容区：iframe 自身控制内边距，容器只负责背景/圆角/溢出 -->
-    <div style="flex:1; min-height:0; background:#fff; border-radius:0 0 8px 8px; overflow:hidden;">
+    <div style="flex:1; min-height:0; background:var(--n-color-target); border-radius:0 0 8px 8px; overflow:hidden;">
       <!-- iframe 容器 -->
       <div v-if="!loadError" style="height:100%;">
         <iframe
@@ -49,7 +49,7 @@ onMounted(async () => {
           :data-plugin-id="props.pluginId"
           data-plugin
           style="width:100%; height:100%; border:none; display:block;"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          sandbox="allow-scripts allow-forms"
         />
       </div>
       <!-- 错误状态 -->

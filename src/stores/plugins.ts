@@ -45,6 +45,16 @@ export async function fetchMarket(force = false): Promise<PluginInfo[]> {
   return marketPlugins.value
 }
 
+/** 强制刷新:先清后端清单缓存(market_refresh),再重新拉取。 */
+export async function refreshMarket(): Promise<void> {
+  try {
+    await invoke('market_refresh')
+  } catch (e) {
+    console.error('Failed to refresh market cache:', e)
+  }
+  await fetchMarket(true)
+}
+
 export function startMarketPoll() {
   if (marketPollTimer) return
   fetchMarket()  // 首次立即加载
@@ -77,20 +87,32 @@ export async function uninstallPlugin(pluginId: string): Promise<InstallResult> 
 export const tasks = ref<Task[]>([])
 export const tasksLoading = ref(false)
 
+/**
+ * 把后端 list_tasks 返回的原始 JSON 映射为前端 Task 类型。
+ * 抽成纯函数以便单元测试回归(如 type_ -> type 字段映射)。
+ */
+export function mapTask(r: Record<string, unknown>): Task {
+  return {
+    task_id: String(r.task_id ?? ''),
+    plugin_id: String(r.plugin_id ?? ''),
+    type: String(r.type ?? ''),
+    status: String(r.status ?? 'pending') as Task['status'],
+    progress: (r.progress as { percent: number; speed?: string; eta?: string; message?: string }) ?? { percent: 0 },
+    error: r.error ? String(r.error) : undefined,
+    file_name: r.file_name ? String(r.file_name) : undefined,
+    output_path: r.output_path ? String(r.output_path) : undefined,
+    url: r.url ? String(r.url) : undefined,
+    created_at: String(r.created_at ?? ''),
+    started_at: r.started_at ? String(r.started_at) : undefined,
+    completed_at: r.completed_at ? String(r.completed_at) : undefined,
+  }
+}
+
 export async function fetchTasks(): Promise<Task[]> {
   tasksLoading.value = true
   try {
     const raw = await invoke<Record<string, unknown>[]>('list_tasks')
-    tasks.value = raw.map(r => ({
-      task_id: String(r.task_id ?? ''),
-      plugin_id: String(r.plugin_id ?? ''),
-      type: String(r.type ?? ''),
-      status: String(r.status ?? 'pending') as Task['status'],
-      progress: (r.progress as { percent: number; speed?: string; eta?: string }) ?? { percent: 0 },
-      created_at: String(r.created_at ?? ''),
-      started_at: r.started_at ? String(r.started_at) : undefined,
-      completed_at: r.completed_at ? String(r.completed_at) : undefined,
-    }))
+    tasks.value = raw.map(mapTask)
   } catch (e) {
     console.error('Failed to fetch tasks:', e)
   } finally {
@@ -103,6 +125,22 @@ export async function cancelTask(taskId: string): Promise<void> {
   await invoke('bridge_message', {
     pluginId: 'system',
     msg: { id: crypto.randomUUID(), command: 'task_cancel', payload: { task_id: taskId } },
+  })
+  await fetchTasks()
+}
+
+export async function pauseTask(taskId: string): Promise<void> {
+  await invoke('bridge_message', {
+    pluginId: 'system',
+    msg: { id: crypto.randomUUID(), command: 'task_pause', payload: { task_id: taskId } },
+  })
+  await fetchTasks()
+}
+
+export async function resumeTask(taskId: string): Promise<void> {
+  await invoke('bridge_message', {
+    pluginId: 'system',
+    msg: { id: crypto.randomUUID(), command: 'task_resume', payload: { task_id: taskId } },
   })
   await fetchTasks()
 }
