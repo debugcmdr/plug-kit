@@ -9,7 +9,8 @@ cd "$ROOT"
 
 TAG="${1:?用法: ./scripts/release.sh <tag> [title]}"
 TITLE="${2:-$TAG}"
-REPO="debugcmdr/plug-kit"
+# 主仓库,与 package-plugins.sh 保持一致,可用环境变量 PLUGKIT_REPO 覆盖
+REPO="${PLUGKIT_REPO:-debugcmdr/plug-kit}"
 
 # 从 osxkeychain 取 GitHub token(不打印)
 TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | grep '^password=' | cut -d= -f2-)"

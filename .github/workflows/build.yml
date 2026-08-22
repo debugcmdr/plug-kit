@@ -81,3 +81,6 @@ jobs:
       - run: npm install
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm run build
+      - run: npm run test:unit
+      - name: Verify marketplace manifests consistency
+        run: bash ./scripts/verify-manifests.sh

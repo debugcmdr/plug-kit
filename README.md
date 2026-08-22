@@ -6,19 +6,20 @@
 
 ## ✨ 特性
 
-- 🧩 **插件市场**:按需安装/卸载工具,自由插拔
+- 🧩 **插件市场**:按需安装/卸载工具,自由插拔;版本对比自动提示「更新」
 - 🔌 **任意语言插件**:标准 CLI stdout JSON 协议,Python / Rust / Go / Node 都能写
-- 🔒 **安全边界**:Zip-Slip 防护、SHA256 校验、子进程隔离、iframe 沙盒
-- 🚀 **零后端**:市场清单是 GitHub 上的 JSON,插件包是 Release 上的 zip
+- 🔒 **安全边界**:Zip-Slip 防护、SHA256 校验、可选 Ed25519 签名验签、子进程隔离、iframe 沙盒 + 严格 CSP
+- 🚀 **零后端**:市场清单是 GitHub 上的 JSON,插件包是 Release 上的 zip;镜像候选池自动降级,失效镜像自动跳过
 - 🎨 **统一 UI**:插件界面是 HTML,由主程序注入桥接 SDK 直接调用后端
-- 📦 **共享依赖**:ffmpeg / yt-dlp 统一管理,多插件共用,自动缓存
+- 📦 **共享依赖**:ffmpeg / yt-dlp 固定版本统一管理,多插件共用,自动缓存 + 官方校验和验证
+- ⚙️ **任务中心**:长任务统一管理,支持暂停/恢复/取消,并发上限 5,历史 7 天自动清理;显示处理文件名 + 「打开输出文件夹」入口
 
 ## 🛠 内置插件
 
 | 插件 | 功能 | 依赖 |
 |------|------|------|
-| [download](https://github.com/plug-kit/plugkit-download) | 视频链接下载(YouTube / Bilibili 等) | yt-dlp |
-| [convert](https://github.com/plug-kit/plugkit-convert) | 视频格式转换、压缩 | ffmpeg |
+| [download](https://github.com/debugcmdr/plug-kit) | 视频链接下载(YouTube / Bilibili 等) | yt-dlp |
+| [convert](https://github.com/debugcmdr/plug-kit) | 视频格式转换、压缩 | ffmpeg |
 
 ## 📦 安装
 
@@ -57,7 +58,7 @@ def handle(cmd, args):
 handle(sys.argv[1], parse_args(sys.argv[2:]))
 ```
 
-插件 UI 通过主程序注入的 `window.MT` / `window.PlugKit` 调用命令、订阅进度、读写配置。
+插件 UI 通过主程序注入的 `window.MT` / `window.PlugKit` 调用命令、订阅进度、读写配置、管理任务(submit / cancel / pause / resume)。
 
 ## 🚀 发布新版本
 
@@ -68,13 +69,15 @@ handle(sys.argv[1], parse_args(sys.argv[2:]))
 git tag v0.1.1
 git push origin v0.1.1
 
-# 2. 打包插件 zip(确定性,sha256 可复现)→ 生成到 release/plugins/
+# 2. 打包插件 zip(确定性,sha256 可复现)→ 生成到 release/plugins/,
+#    并自动同步 market/plugins.json + fallback 快照
+#    (版本/sha256/size/binaryUrl 由脚本写入,无需人工核对,杜绝双份清单漂移)
 ./scripts/package-plugins.sh v0.1.1
 
 # 3. 创建 GitHub Release 并上传插件 zip
 ./scripts/release.sh v0.1.1
 
-# 4. 确认 market/plugins.json 的 sha256 与 Release 实际一致后提交推送
+# 4. 提交同步后的清单(CI 会用 verify-manifests.sh 再校验一致性)
 git add market/plugins.json src-tauri/assets/fallback-manifests.json
 git commit -m "chore: sync v0.1.1 plugin manifests"
 git push origin main
@@ -82,15 +85,22 @@ git push origin main
 
 > 注意:GitHub Raw CDN 缓存最长 5 分钟,发布后稍等片刻再验证市场拉取。
 
+### 插件签名(可选但推荐)
+
+1. 生成密钥对:`./scripts/gen-sign-key.sh`(私钥妥善保管,勿提交仓库)
+2. 将输出的公钥 base64 填入 `src-tauri/src/security.rs` 的 `OFFICIAL_PUBLIC_KEY`
+3. 重新打包,`package-plugins.sh` 会自动为插件 zip 签名并写入清单 `signature` 字段
+4. 配置信任锚后,安装**未签名**插件会被拒绝
+
 ## 🏗 架构
 
 ```
 PlugKit 主程序 (Tauri 2 + Vue 3)
-├── 市场清单:GitHub Raw market/plugins.json + 内置兜底快照 + 多镜像降级
-├── 插件包:GitHub Release zip + SHA256 + Zip-Slip 校验
-├── 插件运行:子进程 + 标准 stdout JSON 协议 + 进度推送
-├── 插件 UI:plugkit:// 自定义协议加载 iframe + 桥接 SDK 注入
-└── 共享依赖:ffmpeg/yt-dlp 缓存 + 引用计数 + 环境变量注入
+├── 市场清单:GitHub Raw market/plugins.json + 内置兜底快照 + 内置镜像候选池自动降级(内存缓存 5min,失效镜像自动跳过)
+├── 插件包:GitHub Release zip + SHA256 + Zip-Slip 校验 + 可选 Ed25519 签名验签
+├── 插件运行:子进程 + 标准 stdout JSON 协议 + 进度推送 + 每任务独立工作目录
+├── 插件 UI:plugkit:// 自定义协议加载 iframe(严格 CSP 注入)+ 桥接 SDK 注入
+└── 共享依赖:ffmpeg/yt-dlp 固定版本缓存 + 引用计数 + 官方校验和验证
 ```
 
 数据目录:`~/.plugkit/`(插件、缓存、配置、任务、日志)
