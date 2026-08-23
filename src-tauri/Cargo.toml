@@ -1,6 +1,6 @@
 [package]
 name = "plugkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "PlugKit | 工具市场 — Open-source multimedia toolbox with plugin architecture"
 authors = []
 edition = "2021"
