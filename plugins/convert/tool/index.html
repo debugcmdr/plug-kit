@@ -6,48 +6,53 @@
   <title>格式转换</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 20px; }
-    .card { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-    h2 { font-size: 16px; margin-bottom: 4px; }
-    .sub { font-size: 12px; color: #646a73; margin-bottom: 14px; }
+    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f5f6f8; color: #1d2129; padding: 22px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #d0d3d9; border-radius: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .card { background: #fff; border-radius: 14px; padding: 20px 24px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .sub { font-size: 12px; color: #86909c; margin-bottom: 16px; line-height: 1.6; }
 
     .cats { display: flex; gap: 8px; margin-bottom: 14px; }
-    .cat { flex: 1; text-align: center; padding: 10px 0; border: 1px solid #e0e2e6; border-radius: 8px; cursor: pointer; font-size: 13px; transition: all .15s; }
+    .cat { flex: 1; text-align: center; padding: 14px 0; border: 1px solid #e0e2e6; border-radius: 9px; cursor: pointer; font-size: 14px; transition: all .15s; background: #fff; }
     .cat:hover { border-color: #3370ff; }
-    .cat.active { border-color: #3370ff; background: #f0f5ff; color: #3370ff; font-weight: 500; }
+    .cat.active { border-color: #3370ff; background: #f0f5ff; color: #3370ff; font-weight: 500; box-shadow: 0 0 0 3px rgba(51,112,255,.08); }
 
     label { display: block; font-size: 12px; color: #646a73; margin: 12px 0 6px; }
-    select { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; }
-    select:focus { border-color: #3370ff; }
+    select { width: 100%; padding: 11px 13px; border: 1px solid #d0d3d9; border-radius: 9px; font-size: 14px; outline: none; background: #fff; transition: border-color .15s, box-shadow .15s; }
+    select:focus { border-color: #3370ff; box-shadow: 0 0 0 3px rgba(51,112,255,.12); }
     .row { display: flex; gap: 12px; }
     .row > div { flex: 1; }
 
-    .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; width: 100%; margin-top: 16px; }
+    /* 主操作按钮:自适应宽度,居中(不再撑满整行) */
+    .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 12px 36px; font-size: 14px; cursor: pointer; display: block; width: auto; margin: 18px auto 0; transition: background .15s; }
+    .btn:hover:not(:disabled) { background: #4a82ff; }
     .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
 
-    /* 单按钮:选择文件 */
-    .pick-area { display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px dashed #d0d3d9; border-radius: 10px; padding: 28px 16px; cursor: pointer; transition: all .15s; margin-top: 6px; }
-    .pick-area:hover { border-color: #3370ff; background: #f8faff; }
-    .pick-area .icon { font-size: 28px; color: #3370ff; margin-bottom: 8px; }
+    /* 选择文件按钮(中等大小,与分类按钮均衡) */
+    .pick-area { display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px dashed #d0d3d9; border-radius: 12px; padding: 18px; cursor: pointer; transition: all .15s; margin-top: 6px; background: #fafbfc; }
+    .pick-area:hover { border-color: #3370ff; background: #f0f5ff; }
+    .pick-area .icon { font-size: 24px; color: #3370ff; margin-bottom: 6px; }
     .pick-area .text { font-size: 14px; color: #3370ff; font-weight: 500; }
     .pick-area .sub2 { font-size: 11px; color: #a0a4ab; margin-top: 4px; }
 
     /* 已选文件列表 */
-    .file-list { margin-top: 14px; }
-    .file-list h3 { font-size: 13px; color: #646a73; font-weight: 500; margin-bottom: 8px; }
-    .file-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #e8eaef; border-radius: 8px; margin-bottom: 6px; background: #fafbfc; }
+    .file-list { margin-top: 16px; }
+    .file-list h3 { font-size: 13px; color: #646a73; font-weight: 600; margin-bottom: 10px; }
+    .file-item { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border: 1px solid #e8eaef; border-radius: 9px; margin-bottom: 6px; background: #fafbfc; }
     .file-item .fname { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* 保存路径 */
-    .save-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 8px; }
-    .save-row .path { flex: 1; font-size: 13px; color: #1f2329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-    .save-row .sm-btn { background: none; border: 1px solid #d0d3d9; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; }
-    .save-row .sm-btn:hover { background: #f0f5ff; }
+    .save-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 10px; }
+    .save-row .path { flex: 1; font-size: 13px; color: #1d2129; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+    .save-row .sm-btn { background: #fff; border: 1px solid #d0d3d9; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
+    .save-row .sm-btn:hover { background: #f0f5ff; border-color: #3370ff; }
     .file-item .fsize { font-size: 11px; color: #a0a4ab; margin-left: 10px; white-space: nowrap; }
     .file-item .fdel { color: #d54941; cursor: pointer; margin-left: 10px; font-size: 16px; line-height: 1; }
     .file-item .fdel:hover { opacity: .7; }
 
-    .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; }
+    .status { margin-top: 12px; font-size: 13px; color: #646a73; white-space: pre-wrap; word-break: break-all; line-height: 1.6; }
     .status.err { color: #d54941; }
     .bar { height: 6px; background: #e8eaef; border-radius: 3px; margin-top: 12px; overflow: hidden; }
     .bar > div { height: 100%; background: #3370ff; border-radius: 3px; transition: width .3s; }
@@ -196,9 +201,10 @@
     $('btnChangeDir').onclick = changeDir;
     $('btnOpenDir').onclick = openDir;
 
-    function setStatus(msg, isErr) {
+    function setStatus(msg, isErr, title) {
       const el = $('status');
       el.textContent = msg;
+      el.title = title || '';
       el.className = 'status' + (isErr ? ' err' : '');
     }
 
@@ -303,7 +309,11 @@
           })
           .catch((e) => {
             failCount++; done++;
-            setStatus(`❌ ${f.name} 失败: ${e}`, true);
+            const full = String((e && e.message) || e);
+            // 简要原因显示在状态区;完整错误(含「｜详情」)在任务中心/日志,hover 可见。
+            const i = full.indexOf('｜');
+            const head = (i > 0 ? full.slice(0, i) : full).trim();
+            setStatus(`❌ ${f.name} 失败: ${head.length > 80 ? head.slice(0, 80) + '…' : head}`, true, full);
           });
       });
     }

@@ -2,9 +2,33 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { GlobalThemeOverrides } from 'naive-ui'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
-import { startMarketPoll } from './stores/plugins'
+import { startMarketPoll, startTaskPoll } from './stores/plugins'
+
+// 统一设计 Token(naive-ui 主题覆盖):主色/圆角/柔和阴影,
+// 保证外壳各面板视觉一致(品牌蓝 #3370ff)。
+const themeOverrides: GlobalThemeOverrides = {
+  common: {
+    primaryColor: '#3370ff',
+    primaryColorHover: '#4a82ff',
+    primaryColorPressed: '#2460e8',
+    primaryColorSuppl: '#3370ff',
+    borderRadius: '10px',
+    borderRadiusSmall: '8px',
+    fontFamily: "-apple-system, 'PingFang SC', 'Segoe UI', sans-serif",
+  },
+  Card: {
+    borderRadius: '12px',
+    boxShadow: '0 1px 3px rgba(0,0,0,.05)',
+    borderColor: '#e5e6eb',
+  },
+  Button: {
+    borderRadiusMedium: '8px',
+    borderRadiusSmall: '7px',
+  },
+}
 
 const activePlugin = ref<string | null>(null)
 let unlistenProgress: UnlistenFn | null = null
@@ -19,19 +43,24 @@ function selectPlugin(target: string) {
 onMounted(async () => {
   // 转发 Tauri 进度事件给对应插件 iframe(plugkit:progress 供 bridge.js onProgress)
   unlistenProgress = await listen('plugkit:task-progress', (event: any) => {
-    const { plugin_id, data } = event.payload || {}
+    const { plugin_id, task_id, data } = event.payload || {}
     if (!plugin_id) return
     const iframe = document.querySelector(
       `iframe[data-plugin-id="${plugin_id}"]`
     ) as HTMLIFrameElement | null
-    iframe?.contentWindow?.postMessage({ type: 'plugkit:progress', data }, '*')
+    // 保留 task_id 随进度下发给插件:并发任务(多链接下载)时,
+    // 插件可据此过滤归属,否则所有任务进度串台(广播无法区分)。
+    iframe?.contentWindow?.postMessage(
+      { type: 'plugkit:progress', data: { ...(data || {}), task_id } },
+      '*'
+    )
   })
   // 启动即后台预取市场清单 + 每 5 分钟轮询,使"打开市场"时数据已就绪,无需原地等待。
   startMarketPoll()
-})
-
-onUnmounted(() => {
-  unlistenProgress?.()
+  // 任务数据全局轮询(侧边栏徽标/任务中心共享一份数据):
+  // 此前 startTaskPoll 只在任务面板挂载时启动,从未进过任务面板时
+  // 侧边栏徽标不随任务开始/结束实时更新。
+  startTaskPoll()
 })
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}
@@ -97,13 +126,13 @@ window.addEventListener('message', (e) => {
 </script>
 
 <template>
-  <n-config-provider>
+  <n-config-provider :theme-overrides="themeOverrides">
     <n-message-provider>
       <n-dialog-provider>
         <div style="height: 100vh; display: flex; flex-direction: column;">
           <div style="flex: 1; display: flex; min-height: 0;">
             <Sidebar @select="selectPlugin" />
-            <div style="flex: 1; min-width: 0; overflow: hidden;">
+            <div style="flex: 1; min-width: 0; overflow: hidden; background: #f5f6f8;">
               <MainContent :active-plugin="activePlugin" @update:active-plugin="selectPlugin" />
             </div>
           </div>
@@ -125,4 +154,10 @@ html, body, #app {
   width: 100%;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
 }
+
+/* 全局细滚动条(外壳与插件页共用观感) */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #d0d3d9; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #b8bcc4; }
+::-webkit-scrollbar-track { background: transparent; }
 </style>

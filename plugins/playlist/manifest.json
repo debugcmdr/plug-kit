@@ -1,0 +1,34 @@
+{
+  "id": "playlist",
+  "name": "播放列表下载",
+  "version": "0.2.0",
+  "description": "播放列表 / 频道全部视频:勾选批量下载、导出链接清单或全量信息(标题/发布时间等)",
+  "author": "plug-kit",
+  "category": "media",
+  "tags": ["playlist", "channel", "batch", "download", "yt-dlp", "export"],
+  "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
+  "dependencies": {
+    "yt-dlp": ">=2024.01.01"
+  },
+  "bridgeVersion": ">=1.0.0",
+  "entry": {
+    "type": "cli",
+    "executable": "plugkit-playlist",
+    "toolDir": "tool"
+  },
+  "commands": {
+    "list": {
+      "stdinArgs": ["list", "--url", "{url}", "--cookies", "{cookies}"],
+      "output": "json"
+    },
+    "download": {
+      "stdinArgs": ["download", "--url", "{url}", "--items", "{items}", "--quality", "{quality}", "--output-dir", "{output_dir}", "--cookies", "{cookies}"],
+      "output": "progress+json"
+    },
+    "export": {
+      "stdinArgs": ["export", "--url", "{url}", "--output-dir", "{output_dir}", "--cookies", "{cookies}", "--mode", "{mode}"],
+      "output": "json"
+    }
+  },
+  "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest"
+}

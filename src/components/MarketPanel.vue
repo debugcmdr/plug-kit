@@ -82,14 +82,22 @@ const filteredPlugins = () => {
     p.description.toLowerCase().includes(query)
   )
 }
+
+// ---- 卡片视觉:对齐首页(home-card)样式与动画 ----
+const CARD_COLORS = ['#3370ff', '#18a058', '#f0a50b', '#722ed1', '#d54941', '#0fc6c2', '#2f54eb', '#f53f3f']
+function pluginColor(id: string) {
+  let h = 0
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 997
+  return CARD_COLORS[h % CARD_COLORS.length]
+}
 </script>
 
 <template>
   <div style="padding: 24px; display: flex; flex-direction: column; gap: 0;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
       <div style="display:flex; align-items:center; gap:10px;">
-        <span style="color:var(--n-primary-color); display:flex;"><AppIcon name="market" :size="20" /></span>
-        <n-h2 style="margin: 0;">插件市场</n-h2>
+        <span style="display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px; background:rgba(51,112,255,.1); color:var(--n-primary-color);"><AppIcon name="market" :size="18" /></span>
+        <n-h2 style="margin: 0; font-size:20px;">插件市场</n-h2>
       </div>
       <n-button size="small" :loading="manualRefreshLoading" @click="manualRefresh">
         <template #icon><AppIcon name="refresh" :size="14" /></template>
@@ -108,56 +116,39 @@ const filteredPlugins = () => {
     <n-spin :show="marketLoading && marketPlugins.length === 0">
       <n-grid :cols="24" :x-gap="16" :y-gap="16">
         <n-gi v-for="plugin in filteredPlugins()" :key="plugin.id" span="12">
-          <n-card style="height: 100%;">
-            <template #header>
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <n-h4 style="margin: 0; display:flex; align-items:center; gap:8px;">
-                  <AppIcon name="tool" :size="15" style="color:var(--n-text-color-3);" />{{ plugin.name }}
-                </n-h4>
-                <n-space :size="4">
-                  <n-tag size="small" type="info">{{ plugin.version }}</n-tag>
-                  <n-tag
+          <!-- 卡片视觉与首页 home-card 同源:圆角14 / hover 浮起+阴影+边框变蓝 / 图标胶囊 / 箭头动效 -->
+          <div class="mk-card">
+            <div class="mk-head">
+              <span class="mk-icon" :style="{ color: pluginColor(plugin.id), background: pluginColor(plugin.id) + '1a' }">
+                <AppIcon name="tool" :size="22" />
+              </span>
+              <div class="mk-titles">
+                <div class="mk-title">{{ plugin.name }}</div>
+                <div class="mk-vers">
+                  <span class="mk-ver">v{{ plugin.version }}</span>
+                  <span
                     v-if="plugin.is_installed && plugin.installed_version"
-                    size="small"
-                    :type="hasUpdate(plugin) ? 'warning' : 'success'"
+                    class="mk-installed"
+                    :class="{ upd: hasUpdate(plugin) }"
                   >
                     {{ hasUpdate(plugin) ? '可更新 v' + plugin.installed_version : '已安装 v' + plugin.installed_version }}
-                  </n-tag>
-                  <n-tag v-else-if="plugin.is_installed" size="small" type="success">已安装</n-tag>
-                </n-space>
+                  </span>
+                  <span v-else-if="plugin.is_installed" class="mk-installed">已安装</span>
+                </div>
               </div>
-            </template>
-            <p style="color: var(--n-text-color-2); margin-bottom: 16px;">
-              {{ plugin.description }}
-            </p>
-            <template #footer>
-              <n-space justify="end">
-                <n-button
-                  v-if="!plugin.is_installed"
-                  type="primary"
-                  @click="installPlugin(plugin)"
-                >
-                  安装
-                </n-button>
-                <template v-else>
-                  <n-button
-                    v-if="hasUpdate(plugin)"
-                    type="primary"
-                    @click="installPlugin(plugin)"
-                  >
-                    更新
-                  </n-button>
-                  <n-button
-                    type="error"
-                    quaternary
-                    @click="confirmUninstall(plugin)"
-                  >
-                    卸载
-                  </n-button>
-                </template>
-              </n-space>
-            </template>
-          </n-card>
+              <span class="mk-arrow"><AppIcon name="arrow" :size="15" /></span>
+            </div>
+            <p class="mk-desc">{{ plugin.description }}</p>
+            <div class="mk-foot">
+              <template v-if="!plugin.is_installed">
+                <button class="mk-btn primary" @click="installPlugin(plugin)">安装</button>
+              </template>
+              <template v-else>
+                <button v-if="hasUpdate(plugin)" class="mk-btn primary" @click="installPlugin(plugin)">更新</button>
+                <button class="mk-btn danger" @click="confirmUninstall(plugin)">卸载</button>
+              </template>
+            </div>
+          </div>
         </n-gi>
       </n-grid>
 
@@ -165,3 +156,56 @@ const filteredPlugins = () => {
     </n-spin>
   </div>
 </template>
+
+<style scoped>
+/* 与首页 home-card 同视觉语言 */
+.mk-card {
+  position: relative;
+  padding: 20px 22px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e8eaef;
+  cursor: default;
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.mk-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(31, 35, 41, .08);
+  border-color: #b8d0ff;
+}
+.mk-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.mk-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 12px;
+  flex-shrink: 0;
+}
+.mk-titles { flex: 1; min-width: 0; }
+.mk-title { font-size: 16px; font-weight: 600; color: #1d2129; margin-bottom: 5px; }
+.mk-vers { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.mk-ver {
+  font-size: 11px; color: #3370ff; background: rgba(51,112,255,.08);
+  padding: 1px 8px; border-radius: 4px; font-weight: 500;
+}
+.mk-installed { font-size: 11px; color: #18a058; background: rgba(24,160,88,.08); padding: 1px 8px; border-radius: 4px; }
+.mk-installed.upd { color: #f0a50b; background: rgba(240,165,11,.1); }
+.mk-arrow { color: #c9cdd4; transition: color 0.18s, transform 0.18s; flex-shrink: 0; }
+.mk-card:hover .mk-arrow { color: #3370ff; transform: translateX(2px); }
+.mk-desc {
+  flex: 1;
+  margin: 0 0 14px;
+  font-size: 13px; color: #86909c; line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mk-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.mk-btn {
+  border: none; border-radius: 8px; padding: 7px 20px;
+  font-size: 13px; cursor: pointer; transition: filter .15s, transform .15s;
+}
+.mk-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.mk-btn.primary { background: #3370ff; color: #fff; }
+.mk-btn.danger { background: rgba(213,73,65,.1); color: #d54941; }
+.mk-btn.danger:hover { background: rgba(213,73,65,.16); }
+</style>

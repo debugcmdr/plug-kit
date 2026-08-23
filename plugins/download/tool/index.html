@@ -6,28 +6,36 @@
   <title>万能下载</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f7f8fa; color: #1f2329; padding: 20px; }
-    .card { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-    h2 { font-size: 16px; margin-bottom: 4px; }
-    .sub { font-size: 12px; color: #646a73; margin-bottom: 14px; }
+    body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: #f5f6f8; color: #1d2129; padding: 22px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #d0d3d9; border-radius: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .card { background: #fff; border-radius: 14px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .sub { font-size: 12px; color: #86909c; margin-bottom: 16px; line-height: 1.6; }
 
-    textarea { width: 100%; padding: 10px 12px; border: 1px solid #d0d3d9; border-radius: 8px; font-size: 14px; outline: none; font-family: inherit; min-height: 70px; resize: vertical; line-height: 1.6; }
-    textarea:focus { border-color: #3370ff; }
-    .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+    textarea { width: 100%; padding: 11px 13px; border: 1px solid #d0d3d9; border-radius: 9px; font-size: 14px; outline: none; font-family: inherit; min-height: 72px; resize: vertical; line-height: 1.6; background: #fff; transition: border-color .15s, box-shadow .15s; }
+    textarea:focus { border-color: #3370ff; box-shadow: 0 0 0 3px rgba(51,112,255,.12); }
+    .btn { background: #3370ff; color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: 14px; cursor: pointer; white-space: nowrap; transition: background .15s; }
+    .btn:hover:not(:disabled) { background: #4a82ff; }
     .btn:disabled { background: #c0c4cc; cursor: not-allowed; }
-    .btn-row { display: flex; gap: 10px; margin-top: 10px; }
+    .btn-row { display: flex; gap: 10px; margin-top: 12px; justify-content: center; }
 
-    /* 保存路径 */
-    .save-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 8px; }
-    .save-row .path { flex: 1; font-size: 13px; color: #1f2329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-    .save-row .sm-btn { background: none; border: 1px solid #d0d3d9; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; }
-    .save-row .sm-btn:hover { background: #f0f5ff; }
+    /* 保存路径 / Cookies */
+    .save-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e8eaef; border-radius: 10px; flex-wrap: wrap; }
+    .save-row .path { flex: 1; font-size: 13px; color: #1d2129; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; min-width: 120px; }
+    .save-row .sm-btn { background: #fff; border: 1px solid #d0d3d9; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #3370ff; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
+    .save-row .sm-btn:hover { background: #f0f5ff; border-color: #3370ff; }
+    .save-row select { border: 1px solid #d0d3d9; border-radius: 7px; padding: 5px 8px; font-size: 12px; color: #1d2129; background: #fff; outline: none; }
+    .cookies-status { font-size: 12px; color: #18a058; }
+    .cookies-status.off { color: #a0a4ab; }
+    .row-label { font-size: 12px; color: #646a73; white-space: nowrap; }
 
     /* 资源列表 */
-    .res-section { margin-top: 14px; }
-    .res-section h3 { font-size: 13px; color: #646a73; font-weight: 500; margin-bottom: 8px; }
+    .res-section { margin-top: 16px; }
+    .res-section h3 { font-size: 13px; color: #646a73; font-weight: 600; margin-bottom: 10px; }
     .fmt-table { width: 100%; border-collapse: collapse; }
-    .fmt-table th, .fmt-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #f0f1f3; font-size: 13px; }
+    .fmt-table th, .fmt-table td { padding: 9px 10px; text-align: left; border-bottom: 1px solid #f0f1f3; font-size: 13px; }
     .fmt-table th { color: #646a73; font-weight: 500; background: #fafbfc; }
     .fmt-table tr:hover { background: #f8faff; }
     .fmt-table .pick { text-align: right; }
@@ -35,45 +43,66 @@
 
     /* 下载按钮 + 进度(按钮左侧百分比 + 完成对钩) */
     .dl-cell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-    .dl-progress { font-size: 12px; color: #3370ff; font-weight: 500; min-width: 36px; text-align: right; }
+    .dl-progress { font-size: 12px; color: #3370ff; font-weight: 500; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
     .dl-progress.done { color: #18a058; }
     .dl-check { color: #18a058; font-size: 15px; display: none; }
     .dl-check.show { display: inline; }
-    .dl-btn { background: none; border: none; color: #3370ff; cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
-    .dl-btn:hover { background: #eef4ff; }
-    .dl-btn:disabled { color: #c0c4cc; cursor: not-allowed; }
+    .dl-btn { background: #f0f5ff; border: none; color: #3370ff; cursor: pointer; font-size: 13px; padding: 5px 12px; border-radius: 7px; white-space: nowrap; transition: background .15s; }
+    .dl-btn:hover:not(:disabled) { background: #e0ebff; }
+    .dl-btn:disabled { color: #c0c4cc; cursor: not-allowed; background: #f5f6f8; }
 
-    .res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
-    .res-card { border: 1px solid #e0e2e6; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+    .res-card { border: 1px solid #e0e2e6; border-radius: 10px; padding: 11px 12px; cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: space-between; gap: 6px; background: #fff; }
     .res-card:hover { border-color: #3370ff; background: #f8faff; }
     .res-card .name { font-size: 13px; }
     .res-card .desc { font-size: 11px; color: #a0a4ab; }
+    .sub-card .name { font-size: 12px; }
 
     /* 每个链接一个卡片 */
-    .link-block { border: 1px solid #e8eaef; border-radius: 10px; padding: 12px 14px; margin-top: 12px; }
-    .link-block .link-title { font-size: 13px; font-weight: 500; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .link-block { border: 1px solid #e8eaef; border-radius: 12px; padding: 14px 16px; margin-top: 12px; background: #fff; transition: border-color .15s, box-shadow .15s; }
+    .link-block:hover { border-color: #d4dcf0; box-shadow: 0 2px 8px rgba(31,35,41,.04); }
+    .link-block .link-title { font-size: 13px; font-weight: 500; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
     .link-block .link-title .status-tag { font-size: 11px; color: #a0a4ab; }
+    .playlist-tip { margin-top: 10px; padding: 8px 12px; background: #fff7e6; border: 1px solid #ffe0b2; border-radius: 8px; font-size: 12px; color: #b26a00; }
     .hidden { display: none; }
   </style>
 </head>
 <body>
   <div class="card">
     <h2>万能下载</h2>
-    <div class="sub">每行一个链接,最多 20 条。提取后选择要下载的内容。</div>
+    <div class="sub">每行一个链接,最多 20 条。提取后选择要下载的内容。支持视频 / 图片 / 音频 / 字幕轨。</div>
 
     <!-- 多链接输入 -->
-    <textarea id="urls" placeholder="每行粘贴一个链接&#10;https://www.bilibili.com/video/...&#10;https://www.youtube.com/watch?v=..."></textarea>
+    <textarea id="urls" placeholder="每行粘贴一个链接&#10;https://www.bilibili.com/video/...&#10;https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/playlist?list=..."></textarea>
     <div class="btn-row">
-      <button class="btn" id="btnExtract" style="flex: 1;">提取全部</button>
+      <button class="btn" id="btnExtract">提取全部</button>
+      <button class="btn" id="btnImport" title="从 CSV / Excel / txt 文件导入链接" style="background:#fff;color:#3370ff;border:1px solid #3370ff;">导入文件</button>
       <button class="btn" id="btnClear" style="background:#fff;color:#3370ff;border:1px solid #3370ff;">清空</button>
     </div>
 
     <!-- 保存路径 -->
     <div class="save-row">
-      <span style="font-size:12px;color:#646a73;">保存到</span>
+      <span class="row-label">保存到</span>
       <span class="path" id="savePath">~/Downloads/PlugKit</span>
       <button class="sm-btn" id="btnChangeDir">更改</button>
       <button class="sm-btn" id="btnOpenDir">打开</button>
+    </div>
+
+    <!-- Cookies 登录态(可选:提升可提取范围/清晰度) -->
+    <div class="save-row">
+      <span class="row-label">登录态</span>
+      <select id="cookiesBrowser">
+        <option value="">不使用</option>
+        <option value="chrome">Chrome</option>
+        <option value="edge">Edge</option>
+        <option value="firefox">Firefox</option>
+        <option value="safari">Safari</option>
+        <option value="brave">Brave</option>
+      </select>
+      <button class="sm-btn" id="btnCookiesApply">应用浏览器</button>
+      <button class="sm-btn" id="btnCookiesFile">Cookies 文件…</button>
+      <button class="sm-btn" id="btnCookiesClear">清除</button>
+      <span class="cookies-status off" id="cookiesStatus">未启用</span>
     </div>
 
     <!-- 提取结果:每个链接一个块 -->
@@ -94,10 +123,19 @@
 
     let saveDir = '';           // 空 = 默认 ~/Downloads/PlugKit
     let links = [];             // [{url, title, info, error, block}]
+    let cookiesSetting = '';    // '' | 浏览器名(chrome/edge/...) | cookies 文件绝对路径
 
     function fmtSize(size) {
       if (!size) return '';
       return (size / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    // 简要错误:取「｜详情」之前的原因段,超长截断。完整错误在任务中心/日志。
+    function brief(msg) {
+      const s = String(msg || '');
+      const i = s.indexOf('｜');
+      const head = (i > 0 ? s.slice(0, i) : s).trim();
+      return head.length > 90 ? head.slice(0, 90) + '…' : head;
     }
 
     // ---- 保存路径 ----
@@ -119,6 +157,46 @@
       parseQueue = [];  // 作废排队中的解析
       $('resultSection').classList.add('hidden');
     };
+
+    // ---- Cookies 登录态 ----
+    // 持久化到插件配置(config_set),重启后仍生效。值:浏览器名或 cookies 文件路径。
+    async function loadCookiesSetting() {
+      try {
+        const v = await MT.config.get('cookies');
+        cookiesSetting = (typeof v === 'string' && v) ? v : '';
+      } catch (e) { cookiesSetting = ''; }
+      renderCookiesStatus();
+    }
+    async function saveCookiesSetting(v) {
+      cookiesSetting = v || '';
+      try { await MT.config.set('cookies', cookiesSetting); } catch (e) { /* 静默 */ }
+      renderCookiesStatus();
+    }
+    function renderCookiesStatus() {
+      const el = $('cookiesStatus');
+      if (!cookiesSetting) {
+        el.textContent = '未启用';
+        el.className = 'cookies-status off';
+      } else if (cookiesSetting.startsWith('/') || cookiesSetting.startsWith('\\')) {
+        const name = cookiesSetting.split('/').pop().split('\\').pop();
+        el.textContent = '文件: ' + name;
+        el.title = cookiesSetting;
+        el.className = 'cookies-status';
+      } else {
+        el.textContent = cookiesSetting.charAt(0).toUpperCase() + cookiesSetting.slice(1) + ' Cookies';
+        el.className = 'cookies-status';
+      }
+    }
+    $('btnCookiesApply').onclick = () => saveCookiesSetting($('cookiesBrowser').value);
+    $('btnCookiesFile').onclick = async () => {
+      try {
+        // Netscape cookies 文件(yt-dlp 兼容格式)
+        const paths = await MT.dialog.openFile(['txt'], false);
+        if (paths && paths.length) saveCookiesSetting(paths[0]);
+      } catch (e) { /* 静默 */ }
+    };
+    $('btnCookiesClear').onclick = () => saveCookiesSetting('');
+    loadCookiesSetting();
 
     // ---- 提取全部(多链接,异步分离)----
     // 设计:点击后立即清空输入框并把链接追加到列表,后台按全局并发池(≤5)异步解析。
@@ -169,7 +247,7 @@
       // 用户可能已点「清空」移除该批 → 迟到结果直接丢弃。
       if (!l || !links.includes(l)) return;
       try {
-        const info = await MT.invoke('list-formats', { url: l.url });
+        const info = await MT.invoke('list-formats', { url: l.url, cookies: cookiesSetting });
         if (!l.block || !links.includes(l)) return;
         l.info = info;
         l.title = info.title || `链接 ${i + 1}`;
@@ -181,8 +259,19 @@
           // 用橙色区分于真实解析失败(红色),避免用户误判。
           const msg = (e && e.message) ? e.message : '解析失败';
           const isDup = msg.indexOf('该链接') === 0;
-          tag.textContent = (isDup ? '⚠️ ' : '❌ ') + msg;
+          // 插件内只显示简要原因(「｜详情」之前),完整错误在任务中心/日志。
+          tag.textContent = (isDup ? '⚠️ ' : '❌ ') + brief(msg);
+          tag.title = msg;  // hover 看完整
           tag.style.color = isDup ? '#e8a838' : '#d54941';
+          // macOS 浏览器 cookies 权限错误(Safari 沙盒):一键直达「完全磁盘访问」面板
+          if (msg.indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+            const btn = document.createElement('button');
+            btn.className = 'sm-btn';
+            btn.style.marginLeft = '8px';
+            btn.textContent = '打开权限设置';
+            btn.onclick = () => { MT.system.openPermissionSettings().catch(() => {}); };
+            tag.appendChild(btn);
+          }
         }
       }
     }
@@ -191,11 +280,20 @@
     function renderLinkBlock(l) {
       const block = l.block;
       const tag = block.querySelector('.status-tag');
-      tag.textContent = '✅ 可下载';
-      tag.style.color = '#18a058';
+      const ai = links.indexOf(l);
+      let html = '';
+
+      if (l.info.is_playlist) {
+        const n = l.info.playlist_count || '';
+        tag.textContent = '✅ 播放列表' + (n ? ` · 共 ${n} 集` : '');
+        tag.style.color = '#18a058';
+        html += `<div class="playlist-tip">检测到播放列表${n ? '（共 ' + n + ' 集）' : ''},下载任意资源时将获取整个列表。</div>`;
+      } else {
+        tag.textContent = '✅ 可下载';
+        tag.style.color = '#18a058';
+      }
       block.querySelector('.link-title span').innerHTML = `<b>${esc(l.title)}</b> · <span style="color:#a0a4ab;font-size:12px;">${esc(l.url)}</span>`;
 
-      let html = '';
       const formats = (l.info.video_formats || []);
       if (formats.length > 0) {
         html += '<div class="res-section"><h3>视频</h3><table class="fmt-table"><thead><tr><th>清晰度</th><th>格式</th><th>大小</th><th></th></tr></thead><tbody>';
@@ -204,15 +302,30 @@
         });
         html += '</tbody></table></div>';
       } else {
-        const ai = links.indexOf(l);
         html += `<div class="res-section"><h3>视频</h3><div class="res-grid"><div class="res-card" data-action="dl-video" data-idx="${ai}" data-label="best"><span class="name">最佳画质</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div></div></div>`;
       }
       // 音频 + 图片
-      const ai = links.indexOf(l);
       html += `<div class="res-section"><h3>音频 / 图片</h3><div class="res-grid">
         <div class="res-card" data-action="dl-audio" data-idx="${ai}"><span class="name">提取音频 (MP3)</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
         <div class="res-card" data-action="dl-image" data-idx="${ai}"><span class="name">封面图片</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
       </div></div>`;
+
+      // 字幕:全部 + 具体语言(手动优先)
+      const subs = (l.info.subtitles || []);
+      if (l.info.has_subtitles && subs.length > 0) {
+        html += `<div class="res-section"><h3>字幕</h3><div class="res-grid">
+          <div class="res-card sub-card" data-action="dl-subtitle" data-idx="${ai}" data-extra=""><span class="name">全部字幕</span><span class="desc">手动</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
+          <div class="res-card sub-card" data-action="dl-subtitle" data-idx="${ai}" data-extra="auto"><span class="name">全部字幕</span><span class="desc">含自动</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>`;
+        subs.filter(s => !s.auto).slice(0, 6).forEach(s => {
+          html += `<div class="res-card sub-card" data-action="dl-subtitle" data-idx="${ai}" data-extra="${esc(s.lang)}"><span class="name">${esc(s.lang)}</span><span class="desc">${esc(s.ext)}</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>`;
+        });
+        html += '</div></div>';
+      } else {
+        html += `<div class="res-section"><h3>字幕</h3><div class="res-grid">
+          <div class="res-card sub-card" data-action="dl-subtitle" data-idx="${ai}" data-extra=""><span class="name">全部字幕</span><span class="desc">未检测到,仍可尝试</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div>
+        </div></div>`;
+      }
+
       if (l.info.is_live) {
         html += `<div class="res-section"><h3>直播</h3><div class="res-grid"><div class="res-card" data-action="dl-live" data-idx="${ai}"><span class="name">录制直播</span><span class="dl-progress" data-prog></span><span class="dl-check">✓</span></div></div></div>`;
       }
@@ -222,12 +335,12 @@
 
       // 绑定下载
       block.querySelectorAll('[data-action]').forEach(el => {
-        el.onclick = () => startDownload(el.dataset.action, Number(el.dataset.idx), el.dataset.label || 'best', el);
+        el.onclick = () => startDownload(el.dataset.action, Number(el.dataset.idx), el.dataset.label || 'best', el, el.dataset.extra || '');
       });
     }
 
     // 下载单个资源:进度显示在按钮左侧,完成显示绿色对钩
-    async function startDownload(kind, linkIdx, quality, el) {
+    async function startDownload(kind, linkIdx, quality, el, extra = '') {
       const l = links[linkIdx];
       if (!l || !l.info) return;
       const category = kind.replace('dl-', '');
@@ -237,8 +350,13 @@
       if (btn) btn.disabled = true;
       if (prog) prog.textContent = '0%';
 
+      // 任务标识:进度事件按 task_id 过滤,多任务并发(多链接下载)时不串台。
+      // 后端 bridge 优先采用插件传入的 task_id(无则自动创建)。
+      const taskId = (crypto.randomUUID ? crypto.randomUUID() : 'dl-' + Date.now() + '-' + Math.random().toString(36).slice(2));
       const off = MT.onProgress((evt) => {
         const d = evt.data || evt;
+        // 旧版主程序事件不带 task_id → 兼容过滤(无 task_id 视为当前任务)
+        if (d.task_id && d.task_id !== taskId) return;
         const pct = d.percent != null ? Math.min(100, Math.max(0, d.percent)) : 0;
         if (prog) { prog.textContent = pct.toFixed(0) + '%'; prog.classList.remove('done'); }
       });
@@ -248,13 +366,38 @@
           url: l.url, category,
           quality: quality || 'best',
           output_dir: saveDir || undefined,
-          extra: '',
+          extra: extra,
+          cookies: cookiesSetting || '',
+          playlist: (l.info.is_playlist) ? '1' : '',
+          task_id: taskId,
         });
         if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         if (prog) { prog.textContent = '100%'; prog.classList.add('done'); }
         if (check) check.classList.add('show');
       } catch (e) {
-        if (prog) { prog.textContent = '失败'; prog.style.color = '#d54941'; }
+        const msg = (e && e.message) ? e.message : '下载失败';
+        if (prog) {
+          prog.textContent = '失败';
+          prog.style.color = '#d54941';
+          prog.title = msg;
+        }
+        // 插件内只显示简要原因;完整错误(含「｜详情」)在任务中心/日志,权限错误附一键直达授权面板
+        if (el) {
+          const err = document.createElement('div');
+          err.className = 'dl-err';
+          err.textContent = brief(msg);
+          err.title = msg;
+          err.style.cssText = 'font-size:12px;color:#d54941;margin-top:4px;word-break:break-all;';
+          if (msg.indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+            const b = document.createElement('button');
+            b.className = 'sm-btn';
+            b.style.marginLeft = '8px';
+            b.textContent = '打开权限设置';
+            b.onclick = () => { MT.system.openPermissionSettings().catch(() => {}); };
+            err.appendChild(b);
+          }
+          (el.parentElement || el).appendChild(err);
+        }
       } finally {
         off();
         if (btn) btn.disabled = false;
@@ -262,6 +405,33 @@
     }
 
     $('btnExtract').onclick = extractAll;
+
+    // 从文件导入链接(csv/xlsx/xls/txt → 链接填入输入框,可编辑后统一「提取全部」)
+    $('btnImport').onclick = async () => {
+      try {
+        const r = await MT.dialog.openFile(['csv', 'xlsx', 'xls', 'txt'], false);
+        const path = r && r.paths && r.paths[0];
+        if (!path) return;  // 用户取消
+        const btn = $('btnImport');
+        btn.disabled = true;
+        btn.textContent = '解析中...';
+        const res = await MT.invoke('import-file', { path: path });
+        const list = (res && res.links) || [];
+        if (list.length === 0) {
+          alert('未识别到链接。请检查文件内容:txt 每行一个 http/https 链接;csv/xlsx 需含「链接/url」列。');
+          return;
+        }
+        const cur = $('urls').value.trim();
+        $('urls').value = (cur ? cur + '\n' : '') + list.join('\n');
+        alert(`已从文件识别并填入 ${list.length} 个链接(每行一个),可编辑后点「提取全部」`);
+      } catch (e) {
+        alert('导入失败: ' + ((e && e.message) || e));
+      } finally {
+        const btn = $('btnImport');
+        btn.disabled = false;
+        btn.textContent = '导入文件';
+      }
+    };
   </script>
 </body>
 </html>

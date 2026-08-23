@@ -58,11 +58,13 @@
     onProgress: onProgress,
     config: {
       get: function(key) { return invoke('config_get', { key: key }); },
-      set: function(key, value) { return invoke('config_set', { key: key, value: value }); },
-      clear: function() { return invoke('config_clear', {}); }
+      set: function(key, value) { return invoke('config_set', { key: key, value: value }); }
+      // 注意:SDK 能力与后端 dispatch 一一对应。后端无 config_clear,
+      // 未提供 clear()(调用会落入兜底分支被误当作插件命令)。
     },
+    // 任务控制:取消 / 暂停 / 恢复。
+    // 任务本身由 MT.invoke 自动创建(带 URL 去重:活跃任务不重复创建,终态允许重新解析)。
     task: {
-      submit: function(type, params) { return invoke('task_submit', { type: type, params: params }); },
       cancel: function(task_id) { return invoke('task_cancel', { task_id: task_id }); },
       pause: function(task_id) { return invoke('task_pause', { task_id: task_id }); },
       resume: function(task_id) { return invoke('task_resume', { task_id: task_id }); }
@@ -84,6 +86,14 @@
     // 在系统文件管理器中打开路径(文件夹或文件所在目录)
     openPath: function(path) {
       return invoke('open_in_folder', { path: path });
+    },
+    // 系统级能力
+    system: {
+      // 打开 macOS「完全磁盘访问权限」设置面板(Safari/浏览器 cookies 授权)。
+      // 与后端命令一一对应;非 macOS 平台会返回错误说明。
+      openPermissionSettings: function() {
+        return invoke('open_permission_settings', {});
+      }
     }
   };
   window.PlugKit = MT;

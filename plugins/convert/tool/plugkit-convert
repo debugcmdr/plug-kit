@@ -123,7 +123,11 @@ def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
 
     last_pct = -1.0
     last_report = time.time()
+    tail = []  # 保留 stderr/stdout 末尾(ffmpeg 合并输出),失败时作为诊断详情
     for line in proc.stdout:
+        tail.append(line)
+        if len(tail) > 8:
+            tail.pop(0)
         m = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
         s = re.search(r"speed=\s*([\d.]+)x", line)
         speed = float(s.group(1)) if s else None
@@ -145,7 +149,13 @@ def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
 
     proc.wait()
     if proc.returncode != 0:
-        error("FFMPEG_ERROR", f"ffmpeg 转换失败(退出码 {proc.returncode})")
+        err = "".join(tail).strip()[-400:]
+        msg = "ffmpeg 转换失败。请检查输入文件是否损坏、所选格式是否支持、磁盘空间是否充足。"
+        if err:
+            msg += f" ｜ 详情: {err} (ffmpeg 退出码 {proc.returncode})"
+        else:
+            msg += f" (ffmpeg 退出码 {proc.returncode})"
+        error("FFMPEG_ERROR", msg)
         return None
     return True
 
@@ -328,11 +338,17 @@ def convert_image(input_path, output_path, quality="90"):
         error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
         return
     except subprocess.TimeoutExpired:
-        error("TIMEOUT", "图片转换超时")
+        error("TIMEOUT", "图片转换超时(180s)。可尝试更换更快的预设或减小输入文件")
         return
 
     if proc.returncode != 0:
-        error("FFMPEG_ERROR", proc.stderr.strip()[-300:] or "ffmpeg 转换失败")
+        err = (proc.stderr or "").strip()[-400:]
+        msg = "图片转换失败。请检查输入图片是否损坏、所选格式是否支持。"
+        if err:
+            msg += f" ｜ 详情: {err} (ffmpeg 退出码 {proc.returncode})"
+        else:
+            msg += f" (ffmpeg 退出码 {proc.returncode})"
+        error("FFMPEG_ERROR", msg)
         return
 
     progress(100, message="转换完成",

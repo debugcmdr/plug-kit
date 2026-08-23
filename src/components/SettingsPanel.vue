@@ -45,8 +45,8 @@ async function openDataDir() {
 <template>
   <div style="padding: 24px; display: flex; flex-direction: column; gap: 20px;">
     <div style="display:flex; align-items:center; gap:10px;">
-      <span style="color:var(--n-primary-color); display:flex;"><AppIcon name="settings" :size="20" /></span>
-      <n-h2 style="margin: 0;">设置</n-h2>
+      <span style="display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px; background:rgba(51,112,255,.1); color:var(--n-primary-color);"><AppIcon name="settings" :size="18" /></span>
+      <n-h2 style="margin: 0; font-size:20px;">设置</n-h2>
     </div>
 
     <!-- 依赖缓存 -->
@@ -73,37 +73,12 @@ async function openDataDir() {
           <n-tag size="small">{{ APP_VERSION }}</n-tag>
         </div>
         <div style="display: flex; justify-content: space-between;">
-          <span style="color: var(--n-text-color-2);">协议</span>
-          <span style="font-size: 13px;">stdout JSON (每行一个对象)</span>
-        </div>
-        <div style="display: flex; justify-content: space-between;">
           <span style="color: var(--n-text-color-2);">数据目录</span>
           <span style="font-size: 13px; color: var(--n-text-color-3);">~/.plugkit/</span>
         </div>
         <n-space style="margin-top: 4px;">
           <n-button size="small" quaternary @click="openLogDir">打开日志目录</n-button>
           <n-button size="small" quaternary @click="openDataDir">打开数据目录</n-button>
-        </n-space>
-      </n-space>
-    </n-card>
-
-    <!-- 热开发 -->
-    <n-card title="热开发">
-      <n-space direction="vertical" :size="8">
-        <p style="font-size: 13px; color: var(--n-text-color-2); margin: 0;">
-          开发者模式：修改插件文件后自动同步到运行时目录，无需重启应用。
-        </p>
-        <n-space>
-          <n-tag type="success" size="small">插件 UI/CLI</n-tag>
-          <span style="font-size: 13px; color: var(--n-text-color-3);">1s 轮询自动同步</span>
-        </n-space>
-        <n-space>
-          <n-tag type="info" size="small">Vue 前端</n-tag>
-          <span style="font-size: 13px; color: var(--n-text-color-3);">Vite HMR 即时刷新</span>
-        </n-space>
-        <n-space>
-          <n-tag type="warning" size="small">Rust 后端</n-tag>
-          <span style="font-size: 13px; color: var(--n-text-color-3);">自动重编译（约 10-20s）</span>
         </n-space>
       </n-space>
     </n-card>

@@ -177,10 +177,18 @@ impl ToolRunner {
         }
 
         // 依赖准备阶段:对任务中心透明展示「正在准备依赖」,而非停留在「等待中」黑盒。
-        // 此阶段在解析计时之外——插件 info() 的 90s 超时只计 yt-dlp 解析时长,不含依赖下载。
+        // 此阶段在解析计时之外——插件 info() 的超时只计解析时长,不含依赖下载。
+        // 文案按 manifest 声明的依赖动态拼接(外壳不硬编码具体依赖名——零业务逻辑)。
+        let dep_names = manifest.dependencies.as_ref()
+            .map(|d| d.keys().cloned().collect::<Vec<_>>().join("、"))
+            .unwrap_or_default();
         crate::task_queue::TaskQueue::update_progress(
             &task_id, 0.0, None, None,
-            Some("正在准备共享依赖（yt-dlp）…".to_string()),
+            Some(if dep_names.is_empty() {
+                "正在准备运行环境…".to_string()
+            } else {
+                format!("正在准备共享依赖（{}）…", dep_names)
+            }),
             None, None,
         ).await;
         // 解析共享依赖真实路径(缓存优先;ffmpeg 系统 PATH 优先)。
@@ -193,6 +201,7 @@ impl ToolRunner {
                     &task_id, crate::task_queue::TaskStatus::Failed, Some(e.clone()),
                 ).await;
                 log::error!("[{}] {}", task_id, e);
+                crate::logger::Logger::task_error(plugin_id, &task_id, "DEP_RESOLVE_FAILED", &e);
                 let _ = std::fs::remove_dir_all(&work_dir);
                 return Err(e);
             }
@@ -277,6 +286,7 @@ impl ToolRunner {
             let msg = format!("Plugin exited with code {}", outcome.code);
             crate::task_queue::TaskQueue::update_status_with_error(&task_id, crate::task_queue::TaskStatus::Failed, Some(msg.clone())).await;
             log::error!("[{}] {}", task_id, msg);
+            crate::logger::Logger::task_error(&plugin_id, &task_id, "EXIT_FAILURE", &msg);
             let _ = std::fs::remove_dir_all(&work_dir);
             return Err(msg);
         }
@@ -302,6 +312,8 @@ impl ToolRunner {
                     Some(e.message.clone()),
                 ).await;
                 log::error!("[{}] plugin error: {}", task_id, e.message);
+                // 落盘日志页:结构化任务错误(错误码 + 完整 message,比插件 UI 更详细)。
+                crate::logger::Logger::task_error(&plugin_id, &task_id, &e.code, &e.message);
             }
             _ => {
                 crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Completed).await;
@@ -378,6 +390,7 @@ impl ToolRunner {
             return Ok(envs);
         };
         let dc = crate::dependency_cache::DependencyCache::new();
+        let platform = crate::dep_manifest::current_platform();
         let mut unavailable: Vec<String> = Vec::new();
         for name in deps.keys() {
             let key = format!("PLUGKIT_{}", name.to_uppercase().replace('-', "_"));
@@ -386,27 +399,21 @@ impl ToolRunner {
                 envs.push((key, name.to_string()));
                 continue;
             }
-            // 走共享缓存(下载或复用缓存)
+            // 运行时只查共享缓存(不递增引用计数——引用关系在「安装」时已登记,
+            // 卸载按 refs 扫描递减,两侧严格对称;若此处再递增会导致孤儿依赖残留)。
+            if let Some(cached) = dc.find_cached_any_version(name, &platform) {
+                envs.push((key, cached.to_string_lossy().to_string()));
+                continue;
+            }
+            // 缓存完全不存在(如安装后缓存被手动删除)→ 兜底重新安装(下载 + 登记引用)。
+            // 此时登记的引用会在卸载时被 decrement_refcount_for_plugin 正确回收。
             match dc.ensure_dependency(name, plugin_id).await {
                 Ok(path) => envs.push((key, path.to_string_lossy().to_string())),
                 Err(e) => {
-                    // pinned 版本下载失败(如 GitHub 被墙)→ 回退到缓存中任意已存在版本,
-                    // 保证依赖仍可用;日志给出真实原因而非静默。
-                    if let Some(cached) = dc.find_cached_any_version(
-                        name,
-                        &crate::dep_manifest::current_platform(),
-                    ) {
-                        log::warn!(
-                            "resolve dep {} for {}: {} (fallback to cached {})",
-                            name, plugin_id, e, cached.display()
-                        );
-                        envs.push((key, cached.to_string_lossy().to_string()));
-                    } else {
-                        // 彻底不可用(无 PATH、无缓存、下载失败):收集,稍后任务直接报失败,
-                        // 而非静默进入插件再报笼统的 YTDLP_MISSING。
-                        log::error!("dependency {} for {} unavailable: {}", name, plugin_id, e);
-                        unavailable.push(name.clone());
-                    }
+                    // 彻底不可用(无 PATH、无缓存、下载失败):收集,稍后任务直接报失败,
+                    // 而非静默进入插件再报笼统的 YTDLP_MISSING。
+                    log::error!("dependency {} for {} unavailable: {}", name, plugin_id, e);
+                    unavailable.push(name.clone());
                 }
             }
         }
@@ -419,36 +426,18 @@ impl ToolRunner {
         Ok(envs)
     }
 
-    /// 定位插件可执行文件。优先用 manifest 的 entry.executable 精确定位;
-    /// 找不到时回退到 tool_dir 下第一个"看起来可执行"的文件。
-    /// (修复:原先盲扫第一个非 exe/dll 文件会把 index.html 当可执行文件)
+    /// 定位插件可执行文件:按 manifest 的 entry.executable 精确定位。
+    /// (安装阶段已校验该文件存在——install 对 manifest.json 与 executable 做
+    /// 错误前置,此处不再盲扫 tool_dir,避免把 index.html 之类误当可执行文件。)
     fn find_executable(tool_dir: &PathBuf, manifest: &crate::manifest_model::Manifest) -> Result<PathBuf, String> {
-        // 1. 优先按 manifest 指定名
         let declared = tool_dir.join(&manifest.entry.executable);
         if declared.exists() && declared.is_file() {
             return Ok(declared);
         }
-
-        // 2. 回退:找第一个可执行(跳过 html/js/css 等非可执行扩展名)
-        for entry in std::fs::read_dir(tool_dir).map_err(|e| format!("Read tool dir: {}", e))? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-            if !path.is_file() { continue; }
-            let ext = path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
-            // 跳过明显的非可执行文件
-            if let Some(e) = &ext {
-                if matches!(e.as_str(), "html" | "htm" | "js" | "css" | "json" | "txt" | "md" | "svg") {
-                    continue;
-                }
-                if e == "exe" || e == "dll" { continue; }
-            }
-            // 无扩展名(macOS/linux 可执行惯例)优先
-            if ext.is_none() && !path.to_string_lossy().contains('.') {
-                return Ok(path);
-            }
-            return Ok(path);
-        }
-        Err("No executable found in tool directory".to_string())
+        Err(format!(
+            "Executable '{}' not found in tool dir (plugin 未通过安装校验或文件被篡改)",
+            manifest.entry.executable
+        ))
     }
 
     fn read_manifest(&self, plugin_id: &str) -> Result<crate::manifest_model::Manifest, String> {
@@ -529,9 +518,12 @@ impl ToolRunner {
                                     }));
                                 }
                                 // 同步任务中心:同一 task_id,任务中心可见真实进度。
+                                // percent clamp 到 0-100(插件为不可信代码,可能上报
+                                // 负数/超 100 的异常值,前端进度条按百分比渲染)。
+                                let clamped = p.percent.map(|v| v.clamp(0.0, 100.0));
                                 crate::task_queue::TaskQueue::update_progress(
                                     &task_id,
-                                    p.percent.unwrap_or(0.0),
+                                    clamped.unwrap_or(0.0),
                                     p.speed.clone(),
                                     p.eta.clone(),
                                     p.message.clone(),

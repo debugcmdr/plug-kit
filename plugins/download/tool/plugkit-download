@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """plugkit-download - 万能下载工具(基于 yt-dlp)
 
-支持:视频 / 音频 / 图片 / 直播 四类下载。
-交互:「提取资源列表 → 选择清晰度/类型 → 下载」。
+支持:视频 / 音频 / 图片 / 直播 / 字幕 五类下载 + 播放列表 + 文件导入链接。
+交互:「提取资源列表 → 选择清晰度/类型/字幕 → 下载」。
 """
+import csv
 import json
 import os
 import re
@@ -51,6 +52,13 @@ CATEGORY_VIDEO = "video"    # 视频(视频+音频)
 CATEGORY_AUDIO = "audio"    # 音频(仅音频 mp3)
 CATEGORY_IMAGE = "image"    # 图片(缩略图/原图)
 CATEGORY_LIVE = "live"      # 直播流
+CATEGORY_SUBTITLE = "subtitle"  # 字幕(手动/自动字幕轨道)
+
+# --cookies-from-browser 支持的浏览器名
+BROWSER_NAMES = {
+    "chrome", "chromium", "edge", "firefox", "brave",
+    "vivaldi", "opera", "safari", "whale",
+}
 
 
 def parse_args(argv):
@@ -72,39 +80,147 @@ def parse_args(argv):
     return args
 
 
-# 常见 yt-dlp 错误 → 人类可读原因
+def cookies_args(cookies):
+    """把 --cookies 参数转为 yt-dlp 参数。
+
+    cookies 取值:
+      - 浏览器名(chrome/edge/firefox/brave/...) → --cookies-from-browser
+      - 文件路径 → --cookies <file>
+      - 空/未提供 → 不加参数
+    """
+    if not cookies or cookies is True or str(cookies).strip() == "":
+        return []
+    c = str(cookies).strip()
+    if c in BROWSER_NAMES:
+        return ["--cookies-from-browser", c]
+    if os.path.isfile(c) or c.endswith((".txt", ".cookies")):
+        return ["--cookies", c]
+    # 未知值按浏览器名透传(yt-dlp 会给出明确错误提示)
+    return ["--cookies-from-browser", c]
+
+
+def playlist_args(playlist):
+    """--playlist 为真值(1/yes/true)时返回 --yes-playlist,支持下载整个播放列表/频道。"""
+    if not playlist or playlist is True:
+        return []
+    p = str(playlist).strip().lower()
+    return ["--yes-playlist"] if p in ("1", "yes", "true", "on") else []
+
+
+# 常见 yt-dlp 错误 → (语义化代码, 可读原因 + 原始错误)
+# 设计:精确分类,避免把"网络挂起/412 风控"误归为"需要 cookies";
+# 末尾附加 yt-dlp 原始错误行(截断),方便用户自诊与排查。
 def diagnose_ytdlp_error(err_lines, last_lines, code):
-    """根据错误行/最后几行,推断失败原因,给出可操作提示。"""
-    all_text = " ".join(err_lines + last_lines)
+    """根据 yt-dlp stderr/最后行推断失败原因,返回 (code, message)。
 
-    # 各平台常见失败模式
-    if any(k in all_text.lower() for k in ["cookies", "cookie", "logged in", "fresh cookies", "login required", "sign in"]):
-        return f"需要登录或 cookies(平台反爬)。可导入浏览器 cookies 后重试。(yt-dlp 退出码 {code})"
-    if "js runtime" in all_text.lower() or "javascript runtime" in all_text.lower():
-        return f"该平台需要 JS 运行时(deno)才能完整解析,当前未安装。安装 deno 后重试。(yt-dlp 退出码 {code})"
-    if "drm" in all_text.lower() or "encrypted" in all_text.lower():
-        return f"该视频受 DRM 加密保护,无法下载。(yt-dlp 退出码 {code})"
-    if "private" in all_text.lower() or "members only" in all_text.lower() or "age restricted" in all_text.lower() or "age-restricted" in all_text.lower() or "this video is private" in all_text.lower():
-        return f"该视频为私密/会员专属/年龄限制,无法访问。(yt-dlp 退出码 {code})"
-    if "geo" in all_text.lower() or "not available in your country" in all_text.lower():
-        return f"该视频在你的地区不可用(地区限制)。(yt-dlp 退出码 {code})"
-    if "requested format" in all_text.lower() or "no video formats" in all_text.lower() or "no format" in all_text.lower() or "unable to download video" in all_text.lower():
-        return f"没有可用的视频格式(可能是直播结束/源站格式变化)。可尝试其它清晰度。(yt-dlp 退出码 {code})"
-    if "http error 403" in all_text.lower() or "403" in all_text.lower():
-        return f"平台拒绝访问(403,反爬)。可能需要 cookies 或稍后重试。(yt-dlp 退出码 {code})"
-    if "http error 404" in all_text.lower() or "404" in all_text.lower():
-        return f"资源不存在或链接失效(404)。(yt-dlp 退出码 {code})"
-    if "network" in all_text.lower() or "timed out" in all_text.lower() or "timeout" in all_text.lower():
-        return f"网络超时或连接失败,请检查网络后重试。(yt-dlp 退出码 {code})"
-    if "unsupported url" in all_text.lower() or "unsupported" in all_text.lower():
-        return f"不支持的链接或站点(yt-dlp 未内置该站解析器)。(yt-dlp 退出码 {code})"
-    if "ffmpeg" in all_text.lower() or "postprocessing" in all_text.lower():
-        return f"合并/后处理失败(可能需要 ffmpeg 或磁盘空间不足)。(yt-dlp 退出码 {code})"
+    code 枚举: NEED_LOGIN / JS_RUNTIME_MISSING / DRM_PROTECTED / PRIVATE_VIDEO
+             / MEMBERS_ONLY / AGE_RESTRICTED / GEO_BLOCKED / RATE_LIMITED_412
+             / HTTP_403 / HTTP_404 / NO_FORMATS_AVAILABLE / NETWORK_ERROR
+             / UNSUPPORTED_URL / FFMPEG_ERROR / UNKNOWN_ERROR
+    """
+    raw = " ".join((err_lines or []) + (last_lines or []))
+    raw_lower = raw.lower()
 
-    # 兜底:返回最近一行原始错误
-    last_err = next((l for l in reversed(last_lines) if l and not l.startswith("[download]")), "")
-    detail = last_err[-200:] if last_err else ""
-    return f"下载失败(yt-dlp 退出码 {code}){(':' + detail) if detail else ''}"
+    # 抓取 yt-dlp 原始错误最后一行(去 [download] 前缀),供用户自诊。
+    detail = ""
+    for line in reversed(last_lines or []):
+        if line and not line.startswith("[download]"):
+            detail = line.strip()[-200:]
+            break
+    suffix = f" ｜ 详情: {detail}" if detail else ""
+
+    # 0. 浏览器 cookies 读取权限(macOS 沙盒:Safari 需「完全磁盘访问」授权)。
+    #    必须放在登录态判断之前——这是 cookies 读取本身失败,比"需要登录"更具体。
+    if "operation not permitted" in raw_lower or "errno 1" in raw_lower:
+        return ("COOKIES_PERMISSION",
+                f"无法读取浏览器 cookies(macOS 沙盒权限限制)。请打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」,"
+                f"勾选 PlugKit(dev 模式为你的终端应用)后重启重试;或改用 Chrome/Edge/Firefox 等无需授权的浏览器。{suffix} (yt-dlp 退出码 {code})")
+
+    # 1. 登录态:仅匹配明确登录指示(避免与 cookie 文件读取失败/网络错误混淆)。
+    if any(k in raw_lower for k in [
+        "sign in to confirm", "confirm you're not a bot", "confirm you are not a bot",
+        "fresh cookies", "logged in", "login required", "use --cookies",
+        "use --username", "please log in",
+    ]):
+        return ("NEED_LOGIN",
+                f"需要登录或有效 cookies(平台反爬)。建议:在界面「登录态」选择已登录该站的浏览器,或稍后重试。{suffix} (yt-dlp 退出码 {code})")
+
+    # 2. JS 运行时(deno 未安装)
+    if "js runtime" in raw_lower or "javascript runtime" in raw_lower:
+        return ("JS_RUNTIME_MISSING",
+                f"该站点需要 JS 运行时(deno)才能解析,当前未安装。{suffix} (yt-dlp 退出码 {code})")
+
+    # 3. DRM
+    if "drm" in raw_lower or "widevine" in raw_lower or "encrypted and not yet" in raw_lower:
+        return ("DRM_PROTECTED",
+                f"该视频受 DRM 加密保护,无法下载。{suffix} (yt-dlp 退出码 {code})")
+
+    # 4. 412 风控(优先级高于 403,避免误归为 cookies 提示)
+    if "412" in raw_lower or "blocked by server" in raw_lower or "request is blocked" in raw_lower:
+        return ("RATE_LIMITED_412",
+                f"服务端主动拒绝(412,风控/限流)。通常过会儿可恢复,或换网络/用登录 cookies 后再试。{suffix} (yt-dlp 退出码 {code})")
+    # 4.5 B 站 API 业务风控(code:-403 等):虽然 HTTP 200,但 API 业务码拒绝
+    if ('"code":-403' in raw_lower or '"code":-101' in raw_lower or '"code":-352' in raw_lower
+            or "访问权限不足" in raw):
+        return ("API_BLOCKED",
+                f"站点 API 业务风控(如 B 站 code:-403/-101 等)。通常意味着 IP 被风控或需要登录 cookies。{suffix} (yt-dlp 退出码 {code})")
+
+    # 5. 私密/会员/年龄(细分)
+    if "members only" in raw_lower:
+        return ("MEMBERS_ONLY",
+                f"该视频为会员专属,需要订阅会员 cookies。{suffix} (yt-dlp 退出码 {code})")
+    if "age" in raw_lower and ("restrict" in raw_lower or "limit" in raw_lower):
+        return ("AGE_RESTRICTED",
+                f"该视频有年龄限制,需要登录相应账号。{suffix} (yt-dlp 退出码 {code})")
+    if "this video is private" in raw_lower or "private video" in raw_lower or "video is private" in raw_lower:
+        return ("PRIVATE_VIDEO",
+                f"该视频为私密/不可访问。{suffix} (yt-dlp 退出码 {code})")
+
+    # 6. 地区限制
+    if "geo" in raw_lower or "not available in your country" in raw_lower:
+        return ("GEO_BLOCKED",
+                f"该视频在你的地区不可用(地区限制)。{suffix} (yt-dlp 退出码 {code})")
+
+    # 7. 无可用格式(直播结束/格式变化)
+    if any(k in raw_lower for k in [
+        "requested format not available", "no video formats", "no format",
+        "unable to download video", "no media could be extracted",
+    ]):
+        return ("NO_FORMATS_AVAILABLE",
+                f"没有可用的视频/音频格式(可能是直播结束、源站格式变更或链接指向图片/字幕而非视频)。{suffix} (yt-dlp 退出码 {code})")
+
+    # 8. 403(与 412 严格区分)
+    if "http error 403" in raw_lower or "403: forbidden" in raw_lower:
+        return ("HTTP_403",
+                f"平台拒绝访问(403,反爬)。建议:用登录 cookies 重试,或换网络。{suffix} (yt-dlp 退出码 {code})")
+
+    # 9. 404
+    if "http error 404" in raw_lower or "404: not found" in raw_lower:
+        return ("HTTP_404",
+                f"资源不存在或链接失效(404)。请检查链接是否有效/已被删除。{suffix} (yt-dlp 退出码 {code})")
+
+    # 10. 网络/超时/SSL/DNS(收紧关键字,不与 cookies 命中冲突)
+    if any(k in raw_lower for k in [
+        "timed out", "read timed out", "connection aborted", "connection refused",
+        "connection reset", "network is unreachable", "ssl:", "certificate verify failed",
+        "name resolution", "temporary failure in name resolution", "no route to host",
+    ]):
+        return ("NETWORK_ERROR",
+                f"网络连接失败/超时/SSL/DNS 异常。请检查网络后重试,或换网络/代理。{suffix} (yt-dlp 退出码 {code})")
+
+    # 11. 不支持的链接
+    if "unsupported url" in raw_lower:
+        return ("UNSUPPORTED_URL",
+                f"不支持的链接或站点(yt-dlp 未内置该站解析器)。{suffix} (yt-dlp 退出码 {code})")
+
+    # 12. ffmpeg 后处理
+    if "ffmpeg" in raw_lower or "postprocessing" in raw_lower or "merging" in raw_lower:
+        return ("FFMPEG_ERROR",
+                f"合并/后处理失败(可能需要 ffmpeg 或磁盘空间不足)。{suffix} (yt-dlp 退出码 {code})")
+
+    # 兜底:返回原始错误,用户可自诊
+    return ("UNKNOWN_ERROR",
+            f"未知错误 (yt-dlp 退出码 {code}){suffix}")
 
 
 def guess_height_from_url(url):
@@ -122,15 +238,49 @@ def guess_height_from_url(url):
     return int(m.group(1)) if m else None
 
 
+def extract_subtitles(meta, auto=False):
+    """从 yt-dlp dump-json 的 subtitles / automatic_captions 提取字幕列表。
+
+    返回 [{lang, name, ext, auto}],每种语言取第一个可用格式。"""
+    source = meta.get("automatic_captions") if auto else meta.get("subtitles")
+    if not source:
+        return []
+    subs = []
+    seen = set()
+    for lang, items in source.items():
+        if not items:
+            continue
+        for s in items:
+            ext = (s.get("ext") or "vtt").lower()
+            key = (lang, ext)
+            if key in seen:
+                continue
+            seen.add(key)
+            subs.append({
+                "lang": lang,
+                "name": s.get("name") or lang,
+                "ext": ext,
+                "auto": auto,
+            })
+    # 常见语言排前面(zh / en / ja / ko),其余按字母序
+    def lang_rank(l):
+        base = l.split("-")[0]
+        return {"zh": 0, "en": 1, "ja": 2, "ko": 3, "ru": 4, "fr": 5, "de": 6, "es": 7}.get(base, 9)
+    subs.sort(key=lambda s: (lang_rank(s["lang"]), s["lang"]))
+    return subs
+
+
 # ---------------------------------------------------------------- 提取信息
-def info(url):
-    """提取资源信息:标题、分类可用格式列表(清晰度/大小)。"""
+def info(url, cookies=""):
+    """提取资源信息:标题、分类可用格式列表(清晰度/大小)、字幕列表。"""
     # -J/--dump-json 输出完整 JSON(比 --print json 更可靠)
-    # --socket-timeout 15 + --retries 3:网络抖动时自动重试,避免默认 20s 读超时直接失败。
+    # 网络健壮性:抖动的网络(国内访问境外/反爬站点)下默认 20s 读超时极易失败;
+    # 提升超时到 20s + 5 次重试 + 重试间隔,降低 B 站等站点间歇性挂起导致的失败率。
     cmd = [YTDLP, "--skip-download", "--no-warnings",
-           "--socket-timeout", "15", "--retries", "3", "-J", url]
+           "--socket-timeout", "20", "--retries", "5", "--retry-sleep", "2", "-J", url]
+    cmd = cmd[:1] + cookies_args(cookies) + cmd[1:]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
     except subprocess.TimeoutExpired as e:
         # 计时仅覆盖 yt-dlp 拉取元数据(解析),不含 Rust 端依赖下载阶段;
         # 此处明确告知用户已排除依赖环节,避免误判为"依赖没下好"而重复提取。
@@ -152,7 +302,8 @@ def info(url):
         return
     if proc.returncode != 0:
         err = proc.stderr.strip()[-400:]
-        error("YTDLP_ERROR", diagnose_ytdlp_error([err], [err], proc.returncode))
+        code, msg = diagnose_ytdlp_error([err], [err], proc.returncode)
+        error(code, msg)
         return
     try:
         meta = json.loads(proc.stdout)
@@ -203,6 +354,9 @@ def info(url):
             audio_ext = f.get("ext", "m4a")
             break
 
+    # 字幕列表(手动 + 自动)
+    subtitles = extract_subtitles(meta, auto=False) + extract_subtitles(meta, auto=True)
+
     result({
         "title": meta.get("title"),
         "uploader": meta.get("uploader"),
@@ -210,10 +364,15 @@ def info(url):
         "thumbnail": meta.get("thumbnail"),
         "webpage_url": meta.get("webpage_url") or meta.get("original_url"),
         "is_live": meta.get("is_live", False),
-        "categories": ["video", "audio", "image", "live"] if meta.get("is_live") else ["video", "audio", "image"],
+        # 播放列表/多条目:列表条数(供 UI 提示"共 N 集"与整列表下载)
+        "is_playlist": bool(meta.get("playlist_count")) or meta.get("_type") == "playlist",
+        "playlist_count": meta.get("playlist_count"),
+        "categories": ["video", "audio", "image", "live", "subtitle"] if meta.get("is_live") else ["video", "audio", "image", "subtitle"],
         "video_formats": formats[:12],   # 最多 12 个清晰度
         "audio_ext": audio_ext,
         "best_height": max([f["height"] for f in formats if f["height"]] or [0]),
+        "subtitles": subtitles[:30],     # 最多 30 条字幕(每种语言 手动+自动)
+        "has_subtitles": len(subtitles) > 0,
     })
 
 
@@ -223,7 +382,7 @@ def _run_ytdlp(cmd, url, suffix="", out_dir=None):
     失败时给出真实原因(cookies/JS运行时/格式/网络等),而非笼统退出码。"""
     # 网络健壮性:抖动的网络(国内访问境外/反爬站点)下默认 20s 读超时极易失败,
     # 统一注入 socket-timeout + 重试,失败率显著下降。
-    cmd = cmd[:1] + ["--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3"] + cmd[1:]
+    cmd = cmd[:1] + ["--socket-timeout", "20", "--retries", "5", "--fragment-retries", "3", "--retry-sleep", "2"] + cmd[1:]
     base_dir = out_dir or (os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else ".")
     os.makedirs(base_dir, exist_ok=True)
     # 一开始就把输出目录上报给任务中心:运行中即可点「打开输出文件夹」。
@@ -278,7 +437,8 @@ def _run_ytdlp(cmd, url, suffix="", out_dir=None):
 
     proc.wait()
     if proc.returncode != 0 and proc.returncode is not None:
-        error("YTDLP_ERROR", diagnose_ytdlp_error(err_lines, last_lines, proc.returncode))
+        code, msg = diagnose_ytdlp_error(err_lines, last_lines, proc.returncode)
+        error(code, msg)
         return False, []
 
     # 收集输出文件:优先用已知输出目录(已存在文件被跳过时不会出现 Destination: 行)
@@ -289,10 +449,11 @@ def _run_ytdlp(cmd, url, suffix="", out_dir=None):
     return True, files
 
 
-def download(url, category, quality, output_dir, extra=""):
-    """按分类下载。quality: best / 1080 / 720 / ... ;extra: 直播时长等。"""
+def download(url, category, quality, output_dir, extra="", cookies="", playlist=""):
+    """按分类下载。quality: best / 1080 / 720 / ... ;extra: 直播时长/字幕语言;cookies: 浏览器名或文件;playlist: 是否整列表。"""
     os.makedirs(output_dir, exist_ok=True)
     pattern = os.path.join(output_dir, "%(title)s.%(ext)s")
+    base_cookies = cookies_args(cookies)
 
     if category == CATEGORY_AUDIO:
         # 音频:提取 mp3
@@ -300,7 +461,7 @@ def download(url, category, quality, output_dir, extra=""):
                "-o", pattern]
         if quality and quality != "best":
             cmd += ["-f", f"bestaudio[abr<={quality}]/bestaudio/best"]
-        cmd.append(url)
+        cmd += playlist_args(playlist) + base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=" 提取音频", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
@@ -309,7 +470,7 @@ def download(url, category, quality, output_dir, extra=""):
         # 图片:下载封面/最高质量图片
         cmd = [YTDLP, "--newline", "--skip-download", "--write-thumbnail",
                "--convert-thumbnails", "jpg", "-o", pattern]
-        cmd.append(url)
+        cmd += playlist_args(playlist) + base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=" 图片", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
@@ -320,8 +481,23 @@ def download(url, category, quality, output_dir, extra=""):
         if extra:
             cmd += ["--wait-for-video", "5"]
             cmd += ["--live-from-start"] if extra == "from_start" else []
-        cmd.append(url)
+        cmd += base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=" 直播", out_dir=output_dir)
+        if ok:
+            result({"output_dir": output_dir, "files": files, "category": category})
+
+    elif category == CATEGORY_SUBTITLE:
+        # 字幕:单独下载字幕轨道(不下载视频)。
+        # extra 语言选择:""=手动字幕全部 / "auto"=手动+自动全部 / "zh-Hans,en"=指定语言(可含 auto)。
+        langs = (extra or "all").strip() or "all"
+        cmd = [YTDLP, "--newline", "--skip-download",
+               "--write-subs", "--sub-format", "srt/best",
+               "--sub-langs", langs, "-o", pattern]
+        if langs == "all" or "auto" in langs.lower():
+            # all 或显式含 auto 时同时写自动字幕
+            cmd.append("--write-auto-subs")
+        cmd += playlist_args(playlist) + base_cookies + [url]
+        ok, files = _run_ytdlp(cmd, url, suffix=" 字幕", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 
@@ -340,16 +516,94 @@ def download(url, category, quality, output_dir, extra=""):
         else:
             fmt = "bestvideo+bestaudio/best"
         cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
-        cmd.append(url)
+        cmd += playlist_args(playlist) + base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}", out_dir=output_dir)
         if ok:
             result({"output_dir": output_dir, "files": files, "category": category})
 
 
+# ---------------------------------------------------------------- 文件导入链接
+def looks_like_url(s):
+    """粗略判断是否为可下载链接(http/https 开头)。"""
+    s = (s or "").strip()
+    return s.startswith(("http://", "https://")) and len(s) > 10
+
+
+def import_file(path):
+    """从文件导入下载链接,返回 {links: 去重后的链接列表}。
+
+    支持:txt(每行一个)、csv、xlsx/xls(优先 url/链接列,否则取首个疑似 url 的单元格)。
+    解析是插件业务(外壳只提供文件选择对话框),供 UI「导入文件」按钮使用。
+    """
+    if not path or not os.path.isfile(path):
+        error("FILE_NOT_FOUND", f"文件不存在: {path}")
+        return
+    ext = os.path.splitext(path)[1].lower()
+    links = []
+    try:
+        if ext == ".txt":
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if looks_like_url(s):
+                        links.append(s)
+        elif ext == ".csv":
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                rows = list(csv.reader(f))
+            if rows:
+                header = [c.lower().strip() for c in rows[0]]
+                url_col = next((i for i, c in enumerate(header)
+                                if c in ("url", "link", "链接", "网址", "视频链接", "download url")), None)
+                for row in rows[1:]:
+                    if url_col is not None and url_col < len(row):
+                        if looks_like_url(row[url_col]):
+                            links.append(row[url_col].strip())
+                    else:
+                        for cell in row:
+                            if looks_like_url(cell):
+                                links.append(cell.strip())
+                                break
+        elif ext in (".xlsx", ".xls"):
+            try:
+                import openpyxl
+            except ImportError:
+                error("DEP_MISSING", "解析 xlsx/xls 需要 openpyxl,请先安装(或改用 txt/csv)")
+                return
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            rows_iter = ws.iter_rows(values_only=True)
+            header = [str(c).lower().strip() if c is not None else "" for c in next(rows_iter, ())]
+            url_col = next((i for i, c in enumerate(header)
+                            if c in ("url", "link", "链接", "网址", "视频链接")), None)
+            for row in rows_iter:
+                if url_col is not None and url_col < len(row) and row[url_col]:
+                    if looks_like_url(str(row[url_col])):
+                        links.append(str(row[url_col]).strip())
+                else:
+                    for cell in row:
+                        if cell and looks_like_url(str(cell)):
+                            links.append(str(cell).strip())
+                            break
+        else:
+            error("UNSUPPORTED_EXT", f"不支持的文件类型: {ext}(支持 txt / csv / xlsx / xls)")
+            return
+    except Exception as e:
+        error("PARSE_ERROR", f"解析文件失败: {e}")
+        return
+
+    # 去重(保序)
+    seen, out = set(), []
+    for u in links:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    result({"links": out, "count": len(out), "file": path})
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
-        result({"usage": "download <info|download> --url URL [--category video|audio|image|live] [--quality best|1080|720|480] [--output-dir DIR]"})
+        result({"usage": "download <info|download|import-file> --url URL [--category video|audio|image|live|subtitle] [--quality best|1080|720|480] [--output-dir DIR] [--cookies chrome|/path/to/cookies.txt] [--playlist 1] [--path FILE]"})
         return
     cmd = argv[0]
     args = parse_args(argv[1:])
@@ -359,7 +613,7 @@ def main():
             if not args.get("url"):
                 error("MISSING_URL", "缺少 --url 参数")
                 return
-            info(args["url"])
+            info(args["url"], args.get("cookies", ""))
         elif cmd == "download":
             if not args.get("url"):
                 error("MISSING_URL", "缺少 --url 参数")
@@ -371,7 +625,14 @@ def main():
                 args.get("quality", "best"),
                 out,
                 args.get("extra", ""),
+                args.get("cookies", ""),
+                args.get("playlist", ""),
             )
+        elif cmd == "import-file":
+            if not args.get("path"):
+                error("MISSING_PATH", "缺少 --path 参数")
+                return
+            import_file(args["path"])
         else:
             error("UNKNOWN_CMD", f"未知命令: {cmd}")
     except Exception as e:

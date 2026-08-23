@@ -11,15 +11,18 @@
 - 🔒 **安全边界**:Zip-Slip 防护、SHA256 校验、可选 Ed25519 签名验签、子进程隔离、iframe 沙盒 + 严格 CSP
 - 🚀 **零后端**:市场清单是 GitHub 上的 JSON,插件包是 Release 上的 zip;镜像候选池自动降级,失效镜像自动跳过
 - 🎨 **统一 UI**:插件界面是 HTML,由主程序注入桥接 SDK 直接调用后端
-- 📦 **共享依赖**:ffmpeg / yt-dlp 固定版本统一管理,多插件共用,自动缓存 + 官方校验和验证
-- ⚙️ **任务中心**:长任务统一管理,支持暂停/恢复/取消,并发上限 5,历史 7 天自动清理;显示处理文件名 + 「打开输出文件夹」入口
+- 📦 **共享依赖**:ffmpeg / ffprobe / yt-dlp 固定版本统一管理,多插件共用;系统 PATH 优先,缺失时自动下载 + 校验和验证 + 缓存引用计数
+- ⚙️ **任务中心**:长任务统一管理,支持暂停/恢复/取消,并发上限 5,历史 7 天自动清理;按时间倒序展示,显示插件名/处理文件名 + 「打开输出文件夹」入口
+- 📋 **三级报错**:插件内简要提示 → 任务中心完整错误(原因+建议+错误码+详情) → 日志页按任务可展开的详细条目
+- 🐛 **日志页**:外壳与任务错误统一落盘(按日 + 14 天轮转),错误条目默认折叠、点击展开详情
 
 ## 🛠 内置插件
 
 | 插件 | 功能 | 依赖 |
 |------|------|------|
-| [download](https://github.com/debugcmdr/plug-kit) | 视频链接下载(YouTube / Bilibili 等) | yt-dlp |
-| [convert](https://github.com/debugcmdr/plug-kit) | 视频格式转换、压缩 | ffmpeg |
+| [download](https://github.com/debugcmdr/plug-kit) | 视频/音频/图片/字幕下载(播放列表、cookies 登录态、CSV/Excel/txt 批量导入链接) | yt-dlp |
+| [playlist](https://github.com/debugcmdr/plug-kit) | 播放列表/合集批量下载(多列表卡片、逐集勾选、导出纯链接或全量信息 CSV) | yt-dlp |
+| [convert](https://github.com/debugcmdr/plug-kit) | 视频/图片格式转换(预设 + 清晰度/压缩参数) | ffmpeg |
 
 ## 📦 安装
 
@@ -71,7 +74,7 @@ git push origin v0.1.1
 
 # 2. 打包插件 zip(确定性,sha256 可复现)→ 生成到 release/plugins/,
 #    并自动同步 market/plugins.json + fallback 快照
-#    (版本/sha256/size/binaryUrl 由脚本写入,无需人工核对,杜绝双份清单漂移)
+#    (版本/sha256/size/binaryUrl 由脚本写入,以各插件 manifest 为唯一事实源)
 ./scripts/package-plugins.sh v0.1.1
 
 # 3. 创建 GitHub Release 并上传插件 zip
@@ -100,7 +103,8 @@ PlugKit 主程序 (Tauri 2 + Vue 3)
 ├── 插件包:GitHub Release zip + SHA256 + Zip-Slip 校验 + 可选 Ed25519 签名验签
 ├── 插件运行:子进程 + 标准 stdout JSON 协议 + 进度推送 + 每任务独立工作目录
 ├── 插件 UI:plugkit:// 自定义协议加载 iframe(严格 CSP 注入)+ 桥接 SDK 注入
-└── 共享依赖:ffmpeg/yt-dlp 固定版本缓存 + 引用计数 + 官方校验和验证
+├── 共享依赖:ffmpeg/ffprobe/yt-dlp 固定版本缓存(系统 PATH 优先,缺失自动下载)+ 引用计数 + 校验和验证
+└── 错误链路:插件 CLI error 事件 → 任务中心(task.error)→ 日志页(TASK_ERROR 结构化落盘,可展开)
 ```
 
 数据目录:`~/.plugkit/`(插件、缓存、配置、任务、日志)

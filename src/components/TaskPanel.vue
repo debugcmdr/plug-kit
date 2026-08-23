@@ -1,13 +1,25 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { tasks, tasksLoading, fetchTasks, cancelTask, pauseTask, resumeTask, startTaskPoll, stopTaskPoll } from '../stores/plugins'
+import { tasks, tasksLoading, fetchTasks, cancelTask, pauseTask, resumeTask, installedVersion } from '../stores/plugins'
 import type { Task } from '../types'
 import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ pluginId?: string }>()
 const statusFilter = ref<string>('all')
 const SEARCH_PERSIST = 'task_filter_status'
+
+// 插件 id → 显示名映射:任务行显示左侧插件名(如「万能下载」而非 download)。
+const pluginNames = ref<Record<string, string>>({})
+async function loadPluginNames() {
+  try {
+    const list = await invoke<{ id: string; name: string }[]>('list_plugins')
+    pluginNames.value = Object.fromEntries(list.map(p => [p.id, p.name]))
+  } catch { /* 失败则回退显示 id */ }
+}
+function displayName(id: string) { return pluginNames.value[id] || id }
+onMounted(() => { loadPluginNames() })
+watch(installedVersion, loadPluginNames)
 
 // 倒计时滴答时钟:每秒推进,驱动任务界面里的实时 ETA 倒计时。
 const now = ref(Date.now())
@@ -17,13 +29,13 @@ onMounted(() => {
   const stored = localStorage.getItem(SEARCH_PERSIST)
   // 旧版本可能存过已删除的筛选(pending/paused),回退到"全部"。
   statusFilter.value = stored && FILTERS.some(f => f.key === stored) ? stored : 'all'
+  // 任务数据由 App 全局轮询维护(startTaskPoll),此处仅确保进入时立即拉一次,
+  // 避免等下一个 3s 轮询周期才显示最新数据。
   fetchTasks()
-  startTaskPoll()
   ticker = setInterval(() => { now.value = Date.now() }, 1000)
 })
 onUnmounted(() => {
   if (ticker) clearInterval(ticker)
-  stopTaskPoll()
 })
 
 function setFilter(s: string) {
@@ -154,9 +166,9 @@ function statusDot(status: string) {
   <div style="padding: 24px; min-height: 100%;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
       <div style="display:flex; align-items:center; gap:10px;">
-        <span style="color:var(--n-primary-color); display:flex;"><AppIcon name="tasks" :size="20" /></span>
-        <n-h2 style="margin:0">任务</n-h2>
-        <n-tag v-if="stats.total" size="small" round :bordered="false">{{ stats.total }}</n-tag>
+        <span style="display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px; background:rgba(51,112,255,.1); color:var(--n-primary-color);"><AppIcon name="tasks" :size="18" /></span>
+        <n-h2 style="margin:0; font-size:20px;">任务</n-h2>
+        <n-tag v-if="stats.total" size="small" round :bordered="false" type="primary">{{ stats.total }}</n-tag>
       </div>
       <n-button size="small" quaternary @click="fetchTasks">
         <template #icon><AppIcon name="refresh" :size="14" /></template>
@@ -191,7 +203,7 @@ function statusDot(status: string) {
       <div v-for="task in filteredTasks" :key="task.task_id" class="task-item">
         <div class="task-head">
           <span class="dot" :style="{ background: statusDot(task.status) }"></span>
-          <span class="t-name">{{ task.plugin_id }}</span>
+          <span class="t-name">{{ displayName(task.plugin_id) }}</span>
           <span class="t-type">{{ task.type }}</span>
           <span v-if="task.file_name" class="t-file" :title="task.output_path || task.file_name">{{ task.file_name }}</span>
           <span class="t-status" :style="{ color: statusDot(task.status) }">{{ STATUS_LABEL[task.status] || task.status }}</span>
@@ -225,7 +237,7 @@ function statusDot(status: string) {
           </div>
         </div>
 
-        <div v-if="task.status === 'failed' && task.error" class="task-err">❌ {{ task.error }}</div>
+        <div v-if="(task.status === 'failed' || task.status === 'interrupted') && task.error" class="task-err">❌ {{ task.error }}</div>
       </div>
     </n-spin>
   </div>
@@ -236,11 +248,16 @@ function statusDot(status: string) {
 
 /* ---- 紧凑任务行 ---- */
 .task-item {
-  background: var(--n-color-target);
-  border: 1px solid var(--n-divider-color);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin-bottom: 8px;
+  background: #fff;
+  border: 1px solid #e8eaef;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  transition: box-shadow .15s, border-color .15s;
+}
+.task-item:hover {
+  border-color: #d4dcf0;
+  box-shadow: 0 2px 8px rgba(31,35,41,.05);
 }
 .task-head {
   display: flex;

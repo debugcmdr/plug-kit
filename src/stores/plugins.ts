@@ -121,27 +121,20 @@ export async function fetchTasks(): Promise<Task[]> {
   return tasks.value
 }
 
+// 任务控制:直接调用外壳的独立 command(不再伪装成 pluginId='system' 的
+// bridge 消息——任务中心是外壳功能,走自己的通道,语义干净)。
 export async function cancelTask(taskId: string): Promise<void> {
-  await invoke('bridge_message', {
-    pluginId: 'system',
-    msg: { id: crypto.randomUUID(), command: 'task_cancel', payload: { task_id: taskId } },
-  })
+  await invoke('cancel_task', { taskId })
   await fetchTasks()
 }
 
 export async function pauseTask(taskId: string): Promise<void> {
-  await invoke('bridge_message', {
-    pluginId: 'system',
-    msg: { id: crypto.randomUUID(), command: 'task_pause', payload: { task_id: taskId } },
-  })
+  await invoke('pause_task', { taskId })
   await fetchTasks()
 }
 
 export async function resumeTask(taskId: string): Promise<void> {
-  await invoke('bridge_message', {
-    pluginId: 'system',
-    msg: { id: crypto.randomUUID(), command: 'task_resume', payload: { task_id: taskId } },
-  })
+  await invoke('resume_task', { taskId })
   await fetchTasks()
 }
 

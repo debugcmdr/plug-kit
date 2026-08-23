@@ -8,7 +8,8 @@
   "tags": ["video", "audio", "image", "convert", "ffmpeg"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
-    "ffmpeg": ">=6.0"
+    "ffmpeg": ">=6.0",
+    "ffprobe": ">=6.0"
   },
   "bridgeVersion": ">=1.0.0",
   "entry": {

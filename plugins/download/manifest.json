@@ -1,11 +1,11 @@
 {
   "id": "download",
   "name": "万能下载",
-  "version": "0.1.0",
-  "description": "下载网页链接中的视频 / 音频 / 图片 / 直播(支持 YouTube、Bilibili 等)",
+  "version": "0.3.0",
+  "description": "下载网页链接中的视频 / 音频 / 图片 / 字幕 / 直播;支持播放列表、cookies 登录态与 CSV/Excel/txt 文件批量导入链接",
   "author": "plug-kit",
   "category": "media",
-  "tags": ["video", "audio", "image", "live", "download", "yt-dlp"],
+  "tags": ["video", "audio", "image", "subtitle", "live", "playlist", "download", "yt-dlp"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
     "yt-dlp": ">=2024.01.01"
@@ -18,12 +18,16 @@
   },
   "commands": {
     "list-formats": {
-      "stdinArgs": ["info", "--url", "{url}"],
+      "stdinArgs": ["info", "--url", "{url}", "--cookies", "{cookies}"],
       "output": "json"
     },
     "download": {
-      "stdinArgs": ["download", "--url", "{url}", "--category", "{category}", "--quality", "{quality}", "--output-dir", "{output_dir}", "--extra", "{extra}"],
+      "stdinArgs": ["download", "--url", "{url}", "--category", "{category}", "--quality", "{quality}", "--output-dir", "{output_dir}", "--extra", "{extra}", "--cookies", "{cookies}", "--playlist", "{playlist}"],
       "output": "progress+json"
+    },
+    "import-file": {
+      "stdinArgs": ["import-file", "--path", "{path}"],
+      "output": "json"
     }
   },
   "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest"

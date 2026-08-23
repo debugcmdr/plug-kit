@@ -9,8 +9,10 @@ import os
 import sys
 
 
-def progress(percent, speed=None, eta=None, message=None):
-    """输出一条进度消息。percent 允许 None(无百分比任务)。"""
+def progress(percent, speed=None, eta=None, message=None, file_name=None, output_path=None):
+    """输出一条进度消息。percent 允许 None(无百分比任务)。
+    file_name/output_path 可选但建议携带:任务中心据此展示处理文件名
+    与「打开输出文件夹」入口。"""
     line = {"type": "progress", "percent": percent}
     if speed is not None:
         line["speed"] = speed
@@ -18,6 +20,10 @@ def progress(percent, speed=None, eta=None, message=None):
         line["eta"] = eta
     if message is not None:
         line["message"] = message
+    if file_name is not None:
+        line["file_name"] = file_name
+    if output_path is not None:
+        line["output_path"] = output_path
     print(json.dumps(line, ensure_ascii=False), flush=True)
 
 

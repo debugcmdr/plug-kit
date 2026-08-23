@@ -100,14 +100,33 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
                         csp
                     );
                     let script = r#"<script src="/bridge.js"></script>"#;
-                    // Insert right after <head> or at the start of <body>.
-                    if html.to_lowercase().contains("<head") {
-                        html.replacen("<head>", &format!("<head>\n  {}\n  {}", meta, script), 1)
-                            .replacen("<head >", &format!("<head >\n  {}\n  {}", meta, script), 1)
-                    } else if html.to_lowercase().contains("<body") {
-                        html.replacen("<body>", &format!("<body>\n  {}\n  {}", meta, script), 1)
+                    // 在 <head...> 标签之后注入,兼容大小写(<HEAD>)与带属性(<head id="x">)。
+                    // 修复:原先 replacen("<head>") 大小写敏感,大写/带属性标签会注入失败
+                    // → 插件拿不到 window.MT,UI 白屏。to_ascii_lowercase 逐字节处理,
+                    // 索引与 html 严格一致,可安全切片。
+                    let lower_ascii = html.to_ascii_lowercase();
+                    let inject_after = if let Some(h) = lower_ascii.find("<head") {
+                        html[h..].find('>').map(|gt| h + gt + 1)
+                    } else if let Some(b) = lower_ascii.find("<body") {
+                        html[b..].find('>').map(|gt| b + gt + 1)
                     } else {
-                        format!("{}\n{}\n{}", meta, script, html)
+                        None
+                    };
+                    match inject_after {
+                        Some(at) => {
+                            let mut out = String::with_capacity(
+                                html.len() + meta.len() + script.len() + 16,
+                            );
+                            out.push_str(&html[..at]);
+                            out.push_str("\n  ");
+                            out.push_str(&meta);
+                            out.push('\n');
+                            out.push_str(script);
+                            out.push('\n');
+                            out.push_str(&html[at..]);
+                            out
+                        }
+                        None => format!("{}\n{}\n{}", meta, script, html),
                     }
                 };
                 let r = http_response(Status::Ok, "text/html", injected.as_bytes());

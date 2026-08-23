@@ -3,14 +3,18 @@
   "plugins": [
     {
       "id": "download",
-      "name": "视频链接下载",
-      "description": "yt-dlp 下载视频/音频/播放列表(支持 YouTube、Bilibili 等)",
-      "version": "0.1.0",
+      "name": "万能下载",
+      "description": "下载网页链接中的视频 / 音频 / 图片 / 字幕 / 直播;支持播放列表、cookies 登录态与 CSV/Excel/txt 文件批量导入链接",
+      "version": "0.3.0",
       "author": "plug-kit",
       "category": "media",
       "tags": [
         "video",
         "audio",
+        "image",
+        "subtitle",
+        "live",
+        "playlist",
         "download",
         "yt-dlp"
       ],
@@ -20,21 +24,23 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 5853,
-      "sha256": "6ae263933d54cda287e5516919d9de6a3814941b364b2944559afe4c3f82cbad",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/download-0.1.0.zip",
+      "size": 19108,
+      "sha256": "87d9e92cb50411a96fbdc7fbf8683d4ff82ec7873cf4bbe736d3501447bb48b8",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//download-0.3.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     },
     {
       "id": "convert",
-      "name": "视频格式转换",
-      "description": "ffmpeg 视频/音频格式转换、压缩、参数调整",
-      "version": "0.1.0",
+      "name": "格式转换",
+      "description": "视频 / 音频 / 图片格式转换(基于 ffmpeg)",
+      "version": "0.2.0",
       "author": "plug-kit",
       "category": "media",
       "tags": [
         "video",
+        "audio",
+        "image",
         "convert",
         "ffmpeg"
       ],
@@ -44,9 +50,36 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 4905,
-      "sha256": "adae626aea57094210db17eb18fb533adb7669c4e2c49ed8a81db7784a944b84",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download/v0.1.0/convert-0.1.0.zip",
+      "size": 11293,
+      "sha256": "7bbd5a031ce15924065764084d3ceeac1690a7a415be349ed5847c452487403d",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//convert-0.2.0.zip",
+      "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
+      "homepage": "https://github.com/debugcmdr/plug-kit"
+    },
+    {
+      "id": "playlist",
+      "name": "播放列表下载",
+      "description": "播放列表 / 频道全部视频:勾选批量下载、导出链接清单或全量信息(标题/发布时间等)",
+      "version": "0.2.0",
+      "author": "plug-kit",
+      "category": "media",
+      "tags": [
+        "playlist",
+        "channel",
+        "batch",
+        "download",
+        "yt-dlp",
+        "export"
+      ],
+      "platforms": [
+        "windows-x64",
+        "macos-arm64",
+        "macos-x64",
+        "linux-x64"
+      ],
+      "size": 15789,
+      "sha256": "6c5cdfbcf30452c68742eec18d85caf90d50057093247947ee4c0483b34a0ad3",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//playlist-0.2.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     }

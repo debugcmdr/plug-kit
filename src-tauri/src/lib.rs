@@ -122,6 +122,37 @@ async fn open_in_folder(app: tauri::AppHandle, path: String) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
+/// 在系统默认浏览器中打开外部 URL(用于首页 GitHub 卡片等跳转)。
+#[tauri::command]
+async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    // 仅允许 http/https 外链,防插件/前端滥用打开本地路径。
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("仅支持 http/https 链接".into());
+    }
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_url(&url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// 打开 macOS「完全磁盘访问权限」设置面板(供 Safari/浏览器 cookies 授权)。
+/// 该权限必须由用户在系统设置中手动授予,主程序无法自行申请——这里仅一键直达。
+/// 非 macOS 平台返回错误提示(浏览器 cookies 权限问题仅存在于 macOS 沙盒)。
+#[tauri::command]
+async fn open_permission_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let opened = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+            .status();
+        return match opened {
+            Ok(s) if s.success() => Ok(()),
+            _ => Err("无法打开系统设置(请手动前往「系统设置 → 隐私与安全性 → 完全磁盘访问权限」)".into()),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("浏览器 cookies 权限问题仅存在于 macOS(Safari 沙盒),当前系统无需此操作".into())
+}
+
 /// 返回用户主目录路径(供前端打开数据/日志目录使用)。
 #[tauri::command]
 fn get_home_dir() -> String {
@@ -249,6 +280,27 @@ async fn list_tasks() -> Result<Vec<serde_json::Value>, String> {
     Ok(task_queue::TaskQueue::list().await)
 }
 
+/// 任务控制(外壳任务中心专用,独立于插件桥接通道)。
+/// 插件 iframe 仍可通过 bridge 的 task_cancel/task_pause/task_resume
+/// 管理自己的任务,两者都落到 TaskQueue 的同一实现。
+#[tauri::command]
+async fn cancel_task(task_id: String) -> Result<serde_json::Value, String> {
+    task_queue::TaskQueue::cancel(&task_id).await;
+    Ok(serde_json::json!({ "cancelled": true }))
+}
+
+#[tauri::command]
+async fn pause_task(task_id: String) -> Result<serde_json::Value, String> {
+    task_queue::TaskQueue::pause(&task_id).await;
+    Ok(serde_json::json!({ "paused": true }))
+}
+
+#[tauri::command]
+async fn resume_task(task_id: String) -> Result<serde_json::Value, String> {
+    task_queue::TaskQueue::resume(&task_id).await;
+    Ok(serde_json::json!({ "resumed": true }))
+}
+
 #[tauri::command]
 fn log_info(msg: String) {
     logger::Logger::info(&msg);
@@ -300,7 +352,13 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
         for line in lines {
             if line.is_empty() { continue; }
             if let Some(lv) = level_filter {
-                if !line.starts_with(&format!("[{}]", lv)) { continue; }
+                // 行格式 `[2026-08-23 19:53:00] [LEVEL] msg`:匹配行内的 [LEVEL] 标记
+                // (不能用 starts_with,时间戳在前)。ERROR 过滤同时纳入 TASK_ERROR(任务错误)。
+                if lv == "ERROR" {
+                    if !line.contains("[ERROR]") && !line.contains("[TASK_ERROR]") { continue; }
+                } else if !line.contains(&format!("[{}]", lv)) {
+                    continue;
+                }
             }
             all_lines.push(line);
             if all_lines.len() >= n { break; }
@@ -333,6 +391,8 @@ pub fn run() {
             market_refresh,
             bridge_message,
             open_in_folder,
+            open_url,
+            open_permission_settings,
             get_home_dir,
             get_cache_stats,
             clean_orphan_cache,
@@ -341,6 +401,9 @@ pub fn run() {
             get_bridge_version,
             check_bridge_compat,
             list_tasks,
+            cancel_task,
+            pause_task,
+            resume_task,
             log_info,
             log_error,
             log_read,

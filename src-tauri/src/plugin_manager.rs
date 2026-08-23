@@ -2,8 +2,6 @@ use crate::manifest_model::Manifest;
 use crate::security::SecurityError;
 use std::fs;
 use std::path::PathBuf;
-use flate2::read::GzDecoder;
-use tar::Archive;
 use zip::ZipArchive;
 use std::io::Cursor;
 
@@ -98,44 +96,58 @@ impl PluginManager {
         self.extract_archive(&bytes, &tmp_dir, &binary_url)?;
         self.validate_extracted_paths(&tmp_dir).map_err(|e| e.to_string())?;
 
-        // 4. Validate bridge version + minAppVersion (against the plugin's own manifest).
+        // 4. Validate the extracted plugin package:
+        //    - manifest.json 必须存在(缺失即包损坏,拒绝安装)
+        //    - bridgeVersion / minAppVersion 与主程序匹配
+        //    - entry.executable 存在(错误前置:安装阶段校验,运行时无需盲扫回退)
         let manifest_path = tmp_dir.join("manifest.json");
-        if manifest_path.exists() {
-            let content = fs::read_to_string(&manifest_path)
-                .map_err(|e| format!("Read extracted manifest: {}", e))?;
-            let manifest: crate::manifest_model::Manifest =
-                serde_json::from_str(&content)
-                    .map_err(|e| format!("Parse extracted manifest: {}", e))?;
-            let current = crate::bridge_version::CURRENT_BRIDGE_VERSION;
-            if let Err(_) = crate::bridge_version::check_bridge_version(&manifest.bridge_version, current) {
+        if !manifest_path.exists() {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(format!("插件包缺少 manifest.json（{}）", plugin_id));
+        }
+        let content = fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("Read extracted manifest: {}", e))?;
+        let manifest: crate::manifest_model::Manifest =
+            serde_json::from_str(&content)
+                .map_err(|e| format!("Parse extracted manifest: {}", e))?;
+        let current = crate::bridge_version::CURRENT_BRIDGE_VERSION;
+        if let Err(_) = crate::bridge_version::check_bridge_version(&manifest.bridge_version, current) {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Ok(crate::InstallResult {
+                success: false,
+                plugin_id: plugin_id.to_string(),
+                message: format!("Bridge version incompatible: requires {}, has {}",
+                    manifest.bridge_version, current),
+                code: Some("BRIDGE_INCOMPATIBLE".into()),
+            });
+        }
+        // 主程序过旧时拒绝安装,提示升级主程序。
+        if let Some(min_app) = &manifest.min_app_version {
+            if let Err(_) = crate::bridge_version::check_bridge_version(
+                &format!(">={}", min_app),
+                env!("CARGO_PKG_VERSION"),
+            ) {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return Ok(crate::InstallResult {
                     success: false,
                     plugin_id: plugin_id.to_string(),
-                    message: format!("Bridge version incompatible: requires {}, has {}",
-                        manifest.bridge_version, current),
-                    code: Some("BRIDGE_INCOMPATIBLE".into()),
+                    message: format!(
+                        "此插件要求主程序 >= v{}，当前为 v{}，请先升级 PlugKit",
+                        min_app,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    code: Some("MIN_APP_VERSION".into()),
                 });
             }
-            // 主程序过旧时拒绝安装,提示升级主程序。
-            if let Some(min_app) = &manifest.min_app_version {
-                if let Err(_) = crate::bridge_version::check_bridge_version(
-                    &format!(">={}", min_app),
-                    env!("CARGO_PKG_VERSION"),
-                ) {
-                    let _ = fs::remove_dir_all(&tmp_dir);
-                    return Ok(crate::InstallResult {
-                        success: false,
-                        plugin_id: plugin_id.to_string(),
-                        message: format!(
-                            "此插件要求主程序 >= v{}，当前为 v{}，请先升级 PlugKit",
-                            min_app,
-                            env!("CARGO_PKG_VERSION")
-                        ),
-                        code: Some("MIN_APP_VERSION".into()),
-                    });
-                }
-            }
+        }
+        // 入口可执行文件存在性校验(错误前置;tool_runner 运行时直接定位,不再盲扫)。
+        let exe = tmp_dir.join(manifest.tool_dir()).join(&manifest.entry.executable);
+        if !exe.is_file() {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(format!(
+                "插件缺少可执行文件 {}（{}）",
+                manifest.entry.executable, plugin_id
+            ));
         }
 
         // 5. Move to plugins dir (atomic swap): 旧目录先挪到 .old,新目录落位后再删旧。
@@ -176,17 +188,10 @@ impl PluginManager {
             });
         }
 
-        // 1. Decrement shared-dependency refcounts BEFORE deleting (so refs tracking
-        //    works). Dependencies still referenced by other plugins are preserved.
+        // 1. 递减共享依赖引用计数：按 plugin_id 扫描 registry 的 refs 递减
+        //    （与安装时的递增严格对称；依赖仍被其他插件引用时保留）。
         let dc = crate::dependency_cache::DependencyCache::new();
-        if let Ok(Some(manifest)) = self.get_manifest(plugin_id).await {
-            if let Some(deps) = &manifest.dependencies {
-                let platform = crate::dep_manifest::current_platform();
-                for (name, _) in deps {
-                    let _ = dc.decrement_refcount(name, "latest", &platform, plugin_id).await;
-                }
-            }
-        }
+        let _ = dc.decrement_refcount_for_plugin(plugin_id).await;
 
         // 2. Remove the plugin directory.
         fs::remove_dir_all(&plugin_dir)
@@ -259,15 +264,14 @@ impl PluginManager {
         Err(format!("Plugin '{}' not found", plugin_id))
     }
 
-    /// Extract an archive (zip / tar.gz) into dest. The archive bytes were already
-    /// downloaded and SHA256-verified by the caller.
+    /// Extract an archive into dest. 插件包由主仓库打包脚本统一产出 zip
+    /// (确定性构建,sha256 可复现),因此只支持 .zip——不再为假想的外部
+    /// 来源保留 tar.gz 分支(省 flate2/tar 两个依赖与一条测试面)。
     fn extract_archive(&self, bytes: &[u8], dest: &PathBuf, source_name: &str) -> Result<(), String> {
         if source_name.ends_with(".zip") {
             self.extract_zip(bytes, dest)
-        } else if source_name.ends_with(".tar.gz") || source_name.ends_with(".tgz") {
-            self.extract_tar_gz(bytes, dest)
         } else {
-            Err("Unsupported archive format".to_string())
+            Err("不支持的插件包格式(仅支持 .zip)".to_string())
         }
     }
 
@@ -288,7 +292,11 @@ impl PluginManager {
             let mut file = archive.by_index(i)
                 .map_err(|e| e.to_string())?;
 
-            let raw_name = file.name().trim_end_matches('/');
+            // 归一化路径分隔符:zip 标准用正斜杠,但恶意/异常包可能混入反斜杠。
+            // 统一转正斜杠后再做 Zip-Slip 检查,避免 Windows 上 PathBuf 把反斜杠
+            // 当分隔符解析出歧义(与 protocol.rs 的路径归一化保持一致)。
+            let raw_name = file.name().replace('\\', "/");
+            let raw_name = raw_name.trim_end_matches('/');
             let entry_rel = match &strip_with_slash {
                 Some(prefix) => raw_name.strip_prefix(prefix.as_str()).unwrap_or(raw_name),
                 None => raw_name,
@@ -317,25 +325,6 @@ impl PluginManager {
                 std::io::copy(&mut file, &mut outfile)
                     .map_err(|e| e.to_string())?;
             }
-        }
-        Ok(())
-    }
-
-    fn extract_tar_gz(&self, bytes: &[u8], dest: &PathBuf) -> Result<(), String> {
-        let cursor = Cursor::new(bytes);
-        let decoder = GzDecoder::new(cursor);
-        let mut archive = Archive::new(decoder);
-        
-        for entry in archive.entries().map_err(|e| e.to_string())? {
-            let mut entry = entry.map_err(|e| e.to_string())?;
-            let outpath = dest.join(entry.path().map_err(|e| e.to_string())?);
-            
-            // Validate path
-            crate::security::validate_unzip_path(dest, &outpath)
-                .map_err(|e| e.to_string())?;
-            
-            entry.unpack(&outpath)
-                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }

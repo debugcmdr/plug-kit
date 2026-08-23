@@ -21,12 +21,9 @@ fn extract_url(params: &serde_json::Value) -> Option<String> {
     params.get("url").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-/// 重复提取时的提示文案(按已有任务状态区分「正在解析中」/「已解析完成」)。
-fn dedup_message(status: crate::task_queue::TaskStatus) -> String {
-    match status {
-        crate::task_queue::TaskStatus::Completed => "该链接已解析完成（可在任务中心查看）".to_string(),
-        _ => "该链接正在解析中，请勿重复提取".to_string(),
-    }
+/// 重复提取时的提示文案(去重仅命中活跃任务;终态任务允许重新解析)。
+fn dedup_message() -> String {
+    "该链接正在解析中，请勿重复提取".to_string()
 }
 
 /// Route an iframe bridge message to the right backend service.
@@ -40,6 +37,57 @@ pub async fn handle_bridge_message(
 ) -> BridgeResponse {
     let result = dispatch(&plugin_id, &msg.command, &msg.payload, &app).await;
     BridgeResponse { id: msg.id, result }
+}
+
+/// 校验插件 manifest 是否声明了该命令。
+/// 未知命令(拼错的内置命令/历史死 API)不应创建任务——直接报错返回,
+/// 避免任务中心堆积无意义 failed 记录(旧兜底分支对任何命令名都先建任务)。
+fn plugin_has_command(plugin_id: &str, command_name: &str) -> bool {
+    let path = dirs::home_dir()
+        .map(|d| d.join(".plugkit/plugins").join(plugin_id).join("manifest.json"))
+        .unwrap_or_default();
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_str::<crate::manifest_model::Manifest>(&content) else {
+        return false;
+    };
+    manifest.commands.contains_key(command_name)
+}
+
+/// 插件 CLI 命令调用统一入口(invoke_command 与兜底分支共用,消除重复)。
+/// 任务中心闭环:无 task_id 时先创建任务,再把同一 id 透传给 ToolRunner。
+/// (此前 ToolRunner 内部另起 id,导致任务中心永远 pending、取消杀不掉进程。)
+async fn invoke_cli(
+    plugin_id: &str,
+    command_name: &str,
+    params: serde_json::Value,
+    payload: &serde_json::Value,
+    app: &tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    if !plugin_has_command(plugin_id, command_name) {
+        return Err(format!(
+            "Unknown command '{}' (not declared in plugin '{}' manifest)",
+            command_name, plugin_id
+        ));
+    }
+    let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            let url = extract_url(&params);
+            // 非 download 命令:原子查重+创建(锁内检查,并发同 URL 只建一个任务,
+            // 防 TOCTOU 穿透;终态任务允许重新解析)。download 允许重复下载。
+            if command_name == "download" {
+                crate::task_queue::TaskQueue::create(plugin_id, command_name, url).await
+            } else {
+                match crate::task_queue::TaskQueue::create_with_dedup(plugin_id, command_name, url).await {
+                    Some(id) => id,
+                    None => return Err(dedup_message()),
+                }
+            }
+        }
+    };
+    crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app), Some(task_id)).await
 }
 
 async fn dispatch(
@@ -56,32 +104,12 @@ async fn dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'command' in payload")?;
             let params = payload.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            // 提取去重:同 URL 已有活跃/已完成任务则直接提示,不重复创建(避免重复解析浪费)。
-            // 下载(download)命令不受此限,允许重复下载。
-            if command_name != "download" {
-                if let Some(url) = extract_url(&params) {
-                    if let Some(existing) = crate::task_queue::TaskQueue::find_duplicate(plugin_id, &url).await {
-                        return Err(dedup_message(existing.status));
-                    }
-                }
-            }
-            // 任务中心闭环：无 task_id 时先创建任务，再把同一 id 透传给 ToolRunner。
-            // （此前 ToolRunner 内部另起 id，导致任务中心永远 pending、取消杀不掉进程。）
-            let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
-                Some(id) => id.to_string(),
-                None => crate::task_queue::TaskQueue::create(plugin_id, command_name, extract_url(&params)).await,
-            };
-            crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app), Some(task_id)).await
+            invoke_cli(plugin_id, command_name, params, payload, app).await
         }
 
         // Task queue
-        "task_submit" => {
-            let task_type = payload
-                .get("type")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing 'type'")?;
-            Ok(serde_json::json!({ "task_id": crate::task_queue::TaskQueue::create(plugin_id, task_type, None).await }))
-        }
+        // 任务创建统一由 invoke_command / 兜底分支完成(MT.invoke 自动建任务,
+        // 含 URL 去重);任务控制命令供插件管理自己的任务。
         "task_cancel" => {
             let task_id = payload
                 .get("task_id")
@@ -161,25 +189,20 @@ async fn dispatch(
             Ok(serde_json::json!({ "opened": true }))
         }
 
+        // macOS 系统权限设置:打开「完全磁盘访问」面板(浏览器 cookies 授权用,
+        // 与 CLI 诊断的 COOKIES_PERMISSION 错误配套,一键直达授权页)。
+        "open_permission_settings" => {
+            crate::open_permission_settings().await?;
+            Ok(serde_json::json!({ "opened": true }))
+        }
+
         // 兜底:任何未识别的命令名都当作插件 CLI 命令直接调用
-        // (插件作者可 MT.invoke('download', {...}) 直观调用 manifest 命令)
+        // (插件作者可 MT.invoke('download', {...}) 直观调用 manifest 命令)。
+        // 命令存在性由 invoke_cli 前置校验:未知命令报错且不创建任务。
         other => {
             let params = payload.get("params").cloned()
                 .unwrap_or_else(|| payload.clone());
-            // 提取去重:同 URL 已有活跃/已完成任务则提示,不重复创建(下载命令除外)。
-            if other != "download" {
-                if let Some(url) = extract_url(&params) {
-                    if let Some(existing) = crate::task_queue::TaskQueue::find_duplicate(plugin_id, &url).await {
-                        return Err(dedup_message(existing.status));
-                    }
-                }
-            }
-            // 与 invoke_command 相同:统一 task_id,保证任务中心闭环。
-            let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
-                Some(id) => id.to_string(),
-                None => crate::task_queue::TaskQueue::create(plugin_id, other, extract_url(&params)).await,
-            };
-            crate::TOOL_RUNNER.invoke(plugin_id, other, params, Some(app), Some(task_id)).await
+            invoke_cli(plugin_id, other, params, payload, app).await
         }
     }
 }

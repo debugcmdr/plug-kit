@@ -49,11 +49,26 @@ impl DependencyCache {
         let before_size = registry.total_size();
         let before_count = self.count_entries()?;
         
+        // 收集 refcount=0 条目的磁盘目录(清理引用后需一并删除文件,否则
+        // 只清 registry、磁盘空间不释放——"清理孤儿缓存"对用户是假清理)。
+        let zero_paths = self.collect_zero_ref_paths(&registry);
         // Remove entries with refcount = 0
         self.remove_zero_ref_entries(&mut registry)?;
         
         registry.save(&self.registry_path)
             .map_err(|e| e.to_string())?;
+        
+        // 删除孤儿条目的缓存目录(refcount=0 = 无插件引用,删除安全,重装即重下)
+        let mut removed_dirs = 0usize;
+        for p in &zero_paths {
+            if p.exists() {
+                let _ = fs::remove_dir_all(p);
+                removed_dirs += 1;
+            }
+        }
+        if removed_dirs > 0 {
+            log::info!("clean_orphans: removed {} cache dir(s)", removed_dirs);
+        }
         
         let after_size = registry.total_size();
         let freed = before_size - after_size;
@@ -61,8 +76,27 @@ impl DependencyCache {
         Ok(serde_json::json!({
             "freed_bytes": freed,
             "freed_mb": freed as f64 / 1_000_000.0,
-            "entries_removed": before_count - self.count_entries()?
+            "entries_removed": before_count - self.count_entries()?,
+            "dirs_removed": removed_dirs,
         }))
+    }
+
+    /// 收集 registry 中 refcount=0 条目对应的磁盘目录路径(待清理)。
+    fn collect_zero_ref_paths(&self, registry: &Registry) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut scan = |entries: &HashMap<String, HashMap<String, crate::registry::DepEntry>>| {
+            for (_, platforms) in entries {
+                for (platform, entry) in platforms {
+                    if entry.refcount == 0 {
+                        paths.push(self.cache_dir.join(&entry.path).join(platform));
+                    }
+                }
+            }
+        };
+        scan(&registry.ffmpeg);
+        scan(&registry.yt_dlp);
+        scan(&registry.other);
+        paths
     }
 
     fn remove_zero_ref_entries(&self, registry: &mut Registry) -> Result<(), String> {
@@ -204,43 +238,47 @@ impl DependencyCache {
         let entries = self.get_mut_entries(registry, name)?;
         if let Some(platforms) = entries.get_mut(version) {
             if let Some(entry) = platforms.get_mut(platform) {
-                entry.refcount += 1;
-                entry.refs.extend(ref_plugins.iter().map(|s| s.to_string()));
+                // 引用按 plugin_id 去重后再递增,保证 refcount == refs.len()(卸载按 refs 扫描递减,两侧必须一致)。
+                for r in ref_plugins {
+                    if !entry.refs.iter().any(|x| x == r) {
+                        entry.refs.push(r.to_string());
+                        entry.refcount += 1;
+                    }
+                }
                 entry.last_accessed = chrono::Utc::now().timestamp();
             }
         }
         Ok(())
     }
 
-    /// 卸载插件时递减引用计数。不为 0 则保留缓存;为 0 进入孤儿,
-    /// 由 clean_orphans 清理。返回该依赖是否已无引用(可安全删除)。
-    pub async fn decrement_refcount(
-        &self,
-        name: &str,
-        version: &str,
-        platform: &str,
-        plugin_id: &str,
-    ) -> Result<bool, String> {
+    /// 卸载插件时按 plugin_id 扫描 registry 递减其全部引用。
+    /// 修复:旧实现按 (name, "latest") 精确寻址,而 registry 的 version key 是
+    /// pinned 真实版本(如 2026.08.19),"latest" 永远查不到 → 递减恒为 no-op,
+    /// 卸载后依赖成为永久孤儿。现在引用关系完全由 refs 列表表达,与安装时
+    /// 的递增(去重 push refs)严格对称。refcount 归 0 的条目由 clean_orphans 清理。
+    pub async fn decrement_refcount_for_plugin(&self, plugin_id: &str) -> Result<(), String> {
         let _lock = self.acquire_lock()?;
         let mut registry = Registry::load_or_new(&self.registry_path)
             .map_err(|e| e.to_string())?;
 
-        let entries = self.get_mut_entries(&mut registry, name)?;
-        let mut orphaned = false;
-        if let Some(platforms) = entries.get_mut(version) {
-            if let Some(entry) = platforms.get_mut(platform) {
-                entry.refs.retain(|r| r != plugin_id);
-                if entry.refcount > 0 {
-                    entry.refcount -= 1;
-                }
-                // 该依赖不再被任何插件引用 → 孤儿,可清理
-                if entry.refcount == 0 || entry.refs.is_empty() {
-                    orphaned = true;
+        let mut changed = false;
+        for bucket in [&mut registry.ffmpeg, &mut registry.yt_dlp, &mut registry.other] {
+            for (_, platforms) in bucket.iter_mut() {
+                for (_, entry) in platforms.iter_mut() {
+                    let before = entry.refs.len();
+                    entry.refs.retain(|r| r != plugin_id);
+                    let removed = before - entry.refs.len();
+                    if removed > 0 {
+                        entry.refcount = entry.refcount.saturating_sub(removed as u32);
+                        changed = true;
+                    }
                 }
             }
         }
-        registry.save(&self.registry_path).map_err(|e| e.to_string())?;
-        Ok(orphaned)
+        if changed {
+            registry.save(&self.registry_path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn get_mut_entries<'a>(

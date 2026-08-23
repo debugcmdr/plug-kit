@@ -22,6 +22,19 @@ impl Logger {
         Self::write_log("WARN", msg);
     }
 
+    /// 任务错误:结构化 JSON 行(日志页渲染为可展开条目)。
+    /// 比插件 UI 的错误更完整:含错误码 + 完整 message(插件把 details 拼进 message)。
+    pub fn task_error(plugin_id: &str, task_id: &str, code: &str, message: &str) {
+        let msg = format!(
+            "{{\"plugin\":{},\"task_id\":{},\"code\":{},\"message\":{}}}",
+            serde_json::to_string(plugin_id).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(task_id).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(code).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(message).unwrap_or_else(|_| "\"\"".into()),
+        );
+        Self::write_log("TASK_ERROR", &msg);
+    }
+
     fn write_log(level: &str, msg: &str) {
         let log_dir = dirs::home_dir()
             .unwrap_or_default()
