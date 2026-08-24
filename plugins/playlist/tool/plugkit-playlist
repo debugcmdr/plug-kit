@@ -11,187 +11,17 @@ import re
 import subprocess
 import sys
 
-# ---- 协议辅助(与主程序 plugkit 协议对齐) ----
-def progress(percent, speed=None, eta=None, message=None, file_name=None, output_path=None):
-    line = {"type": "progress", "percent": percent}
-    if speed:
-        line["speed"] = speed
-    if eta:
-        line["eta"] = eta
-    if message:
-        line["message"] = message
-    if file_name:
-        line["file_name"] = file_name
-    if output_path:
-        line["output_path"] = output_path
-    print(json.dumps(line, ensure_ascii=False), flush=True)
-
-
-def result(data):
-    print(json.dumps({"type": "result", "success": True, "data": data}, ensure_ascii=False), flush=True)
-
-
-def error(code, message):
-    print(json.dumps({"type": "error", "code": code, "message": message}, ensure_ascii=False), flush=True)
-
-
-def dep(name):
-    key = f"PLUGKIT_{name.upper().replace('-', '_')}"
-    if key in os.environ:
-        return os.environ[key]
-    return name  # fallback to PATH
-
+# 公共模块:打包时由 scripts 复制进 tool/(生产);仓库源码运行时从 shared 加载(开发/测试)。
+# 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
+try:
+    from _protocol import progress, result, error, dep, parse_args  # noqa: F401
+    from _ytdlp import cookies_args, diagnose_ytdlp_error  # noqa: F401
+except ImportError:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
+    from _protocol import progress, result, error, dep, parse_args  # noqa: F401
+    from _ytdlp import cookies_args, diagnose_ytdlp_error  # noqa: F401
 
 YTDLP = dep("yt-dlp")
-
-BROWSER_NAMES = {
-    "chrome", "chromium", "edge", "firefox", "brave",
-    "vivaldi", "opera", "safari", "whale",
-}
-
-
-def parse_args(argv):
-    args = {}
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a.startswith("--"):
-            key = a[2:].split("=")[0].replace("-", "_")
-            if "=" in a:
-                args[key] = a.split("=", 1)[1]
-            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
-                args[key] = argv[i + 1]
-                i += 1
-            else:
-                args[key] = True
-        i += 1
-    return args
-
-
-def cookies_args(cookies):
-    """cookies 参数:浏览器名 → --cookies-from-browser;文件路径 → --cookies <file>。"""
-    if not cookies or cookies is True or str(cookies).strip() == "":
-        return []
-    c = str(cookies).strip()
-    if c in BROWSER_NAMES:
-        return ["--cookies-from-browser", c]
-    if os.path.isfile(c) or c.endswith((".txt", ".cookies")):
-        return ["--cookies", c]
-    return ["--cookies-from-browser", c]
-
-
-def diagnose_ytdlp_error(err_lines, last_lines, code):
-    """根据 yt-dlp stderr/最后行推断失败原因,返回 (code, message)。
-
-    code 枚举: NEED_LOGIN / JS_RUNTIME_MISSING / DRM_PROTECTED / PRIVATE_VIDEO
-             / MEMBERS_ONLY / AGE_RESTRICTED / GEO_BLOCKED / RATE_LIMITED_412
-             / HTTP_403 / HTTP_404 / NO_FORMATS_AVAILABLE / NETWORK_ERROR
-             / UNSUPPORTED_URL / FFMPEG_ERROR / UNKNOWN_ERROR
-    """
-    raw = " ".join((err_lines or []) + (last_lines or []))
-    raw_lower = raw.lower()
-
-    # 抓取 yt-dlp 原始错误最后一行(去 [download] 前缀),供用户自诊。
-    detail = ""
-    for line in reversed(last_lines or []):
-        if line and not line.startswith("[download]"):
-            detail = line.strip()[-200:]
-            break
-    suffix = f" ｜ 详情: {detail}" if detail else ""
-
-    # 0. 浏览器 cookies 读取权限(macOS 沙盒:Safari 需「完全磁盘访问」授权)。
-    #    必须放在登录态判断之前——这是 cookies 读取本身失败,比"需要登录"更具体。
-    if "operation not permitted" in raw_lower or "errno 1" in raw_lower:
-        return ("COOKIES_PERMISSION",
-                f"无法读取浏览器 cookies(macOS 沙盒权限限制)。请打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」,"
-                f"勾选 PlugKit(dev 模式为你的终端应用)后重启重试;或改用 Chrome/Edge/Firefox 等无需授权的浏览器。{suffix} (yt-dlp 退出码 {code})")
-
-    # 1. 登录态:仅匹配明确登录指示(避免与 cookie 文件读取失败/网络错误混淆)。
-    if any(k in raw_lower for k in [
-        "sign in to confirm", "confirm you're not a bot", "confirm you are not a bot",
-        "fresh cookies", "logged in", "login required", "use --cookies",
-        "use --username", "please log in",
-    ]):
-        return ("NEED_LOGIN",
-                f"需要登录或有效 cookies(平台反爬)。建议:在界面「登录态」选择已登录该站的浏览器,或稍后重试。{suffix} (yt-dlp 退出码 {code})")
-
-    # 2. JS 运行时(deno 未安装)
-    if "js runtime" in raw_lower or "javascript runtime" in raw_lower:
-        return ("JS_RUNTIME_MISSING",
-                f"该站点需要 JS 运行时(deno)才能解析,当前未安装。{suffix} (yt-dlp 退出码 {code})")
-
-    # 3. DRM
-    if "drm" in raw_lower or "widevine" in raw_lower or "encrypted and not yet" in raw_lower:
-        return ("DRM_PROTECTED",
-                f"该视频受 DRM 加密保护,无法下载。{suffix} (yt-dlp 退出码 {code})")
-
-    # 4. 412 风控(优先级高于 403,避免误归为 cookies 提示)
-    if "412" in raw_lower or "blocked by server" in raw_lower or "request is blocked" in raw_lower:
-        return ("RATE_LIMITED_412",
-                f"服务端主动拒绝(412,风控/限流)。通常过会儿可恢复,或换网络/用登录 cookies 后再试。{suffix} (yt-dlp 退出码 {code})")
-    # 4.5 B 站 API 业务风控(code:-403 等):虽然 HTTP 200,但 API 业务码拒绝
-    if ('"code":-403' in raw_lower or '"code":-101' in raw_lower or '"code":-352' in raw_lower
-            or "访问权限不足" in raw):
-        return ("API_BLOCKED",
-                f"站点 API 业务风控(如 B 站 code:-403/-101 等)。通常意味着 IP 被风控或需要登录 cookies。{suffix} (yt-dlp 退出码 {code})")
-
-    # 5. 私密/会员/年龄(细分)
-    if "members only" in raw_lower:
-        return ("MEMBERS_ONLY",
-                f"该视频为会员专属,需要订阅会员 cookies。{suffix} (yt-dlp 退出码 {code})")
-    if "age" in raw_lower and ("restrict" in raw_lower or "limit" in raw_lower):
-        return ("AGE_RESTRICTED",
-                f"该视频有年龄限制,需要登录相应账号。{suffix} (yt-dlp 退出码 {code})")
-    if "this video is private" in raw_lower or "private video" in raw_lower or "video is private" in raw_lower:
-        return ("PRIVATE_VIDEO",
-                f"该视频为私密/不可访问。{suffix} (yt-dlp 退出码 {code})")
-
-    # 6. 地区限制
-    if "geo" in raw_lower or "not available in your country" in raw_lower:
-        return ("GEO_BLOCKED",
-                f"该视频在你的地区不可用(地区限制)。{suffix} (yt-dlp 退出码 {code})")
-
-    # 7. 无可用格式(直播结束/格式变化)
-    if any(k in raw_lower for k in [
-        "requested format not available", "no video formats", "no format",
-        "unable to download video", "no media could be extracted",
-    ]):
-        return ("NO_FORMATS_AVAILABLE",
-                f"没有可用的视频/音频格式(可能是直播结束、源站格式变更或链接指向图片/字幕而非视频)。{suffix} (yt-dlp 退出码 {code})")
-
-    # 8. 403(与 412 严格区分)
-    if "http error 403" in raw_lower or "403: forbidden" in raw_lower:
-        return ("HTTP_403",
-                f"平台拒绝访问(403,反爬)。建议:用登录 cookies 重试,或换网络。{suffix} (yt-dlp 退出码 {code})")
-
-    # 9. 404
-    if "http error 404" in raw_lower or "404: not found" in raw_lower:
-        return ("HTTP_404",
-                f"资源不存在或链接失效(404)。请检查链接是否有效/已被删除。{suffix} (yt-dlp 退出码 {code})")
-
-    # 10. 网络/超时/SSL/DNS(收紧关键字,不与 cookies 命中冲突)
-    if any(k in raw_lower for k in [
-        "timed out", "read timed out", "connection aborted", "connection refused",
-        "connection reset", "network is unreachable", "ssl:", "certificate verify failed",
-        "name resolution", "temporary failure in name resolution", "no route to host",
-    ]):
-        return ("NETWORK_ERROR",
-                f"网络连接失败/超时/SSL/DNS 异常。请检查网络后重试,或换网络/代理。{suffix} (yt-dlp 退出码 {code})")
-
-    # 11. 不支持的链接
-    if "unsupported url" in raw_lower:
-        return ("UNSUPPORTED_URL",
-                f"不支持的链接或站点(yt-dlp 未内置该站解析器)。{suffix} (yt-dlp 退出码 {code})")
-
-    # 12. ffmpeg 后处理
-    if "ffmpeg" in raw_lower or "postprocessing" in raw_lower or "merging" in raw_lower:
-        return ("FFMPEG_ERROR",
-                f"合并/后处理失败(可能需要 ffmpeg 或磁盘空间不足)。{suffix} (yt-dlp 退出码 {code})")
-
-    # 兜底:返回原始错误,用户可自诊
-    return ("UNKNOWN_ERROR",
-            f"未知错误 (yt-dlp 退出码 {code}){suffix}")
-
 
 def base_cmd(extra_args=()):
     """统一网络健壮性参数(与万能下载插件对齐):20s 超时 + 5 次重试 + 重试间隔。"""
@@ -270,6 +100,7 @@ def _run_download(cmd, url, out_dir, message_prefix=""):
 
     dst_dir = None
     file_name = None
+    dest_files = []         # 本次任务实际输出文件(destination 行记录,去重)
     err_lines = []
     last_lines = []
     total_items = None
@@ -304,6 +135,8 @@ def _run_download(cmd, url, out_dir, message_prefix=""):
             dst = line.split("Destination:", 1)[1].strip()
             dst_dir = os.path.dirname(dst) or "."
             file_name = os.path.basename(dst)
+            if dst not in dest_files:
+                dest_files.append(dst)
         elif line.startswith("[download] 100%"):
             progress(100, message="单集完成", file_name=file_name, output_path=base_dir)
         elif "has already been downloaded" in line:
@@ -317,10 +150,14 @@ def _run_download(cmd, url, out_dir, message_prefix=""):
         error(code, msg)
         return False, []
 
+    # 收集输出文件:精确到本次任务 destination 记录(避免整目录 listdir 混入无关文件)
     files = []
-    collect_dir = out_dir or dst_dir
-    if collect_dir and os.path.isdir(collect_dir):
-        files = sorted(os.listdir(collect_dir))
+    if dest_files:
+        files = sorted({os.path.basename(f) for f in dest_files if os.path.exists(f)})
+    if not files:
+        collect_dir = out_dir or dst_dir
+        if collect_dir and os.path.isdir(collect_dir):
+            files = sorted(os.listdir(collect_dir))
     return True, files
 
 
@@ -417,15 +254,23 @@ def export(url, output_dir, cookies="", mode="full"):
         s = str(d)
         return f"{s[0:4]}-{s[4:6]}-{s[6:8]}" if len(s) >= 8 and s.isdigit() else s
 
+    def csv_safe(v):
+        # CSV 公式注入防护:标题/上传者来自第三方站点(不可信),以 = + - @ 开头
+        # 的单元格在 Excel 打开时会按公式解析(老版本可执行命令)。前缀 ' 使其按文本。
+        s = str(v)
+        if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+            return "'" + s
+        return s
+
     rows = [["序号", "标题", "发布时间", "时长", "上传者", "播放量", "链接"]]
     for idx, e in enumerate(entries, start=1):
         vc = e.get("view_count")
         rows.append([
             idx,
-            e.get("title") or f"条目 {idx}",
+            csv_safe(e.get("title") or f"条目 {idx}"),
             fmt_date(e.get("upload_date")),
             e.get("duration_string") or "",
-            e.get("uploader") or e.get("channel") or "",
+            csv_safe(e.get("uploader") or e.get("channel") or ""),
             vc if vc is not None else "",
             e.get("url") or e.get("webpage_url") or "",
         ])

@@ -13,6 +13,8 @@ export interface InstallResult {
   message: string
   /** 结构化错误码:ALREADY_LATEST / BRIDGE_INCOMPATIBLE / MIN_APP_VERSION / UNSIGNED_PLUGIN 等 */
   code?: string
+  /** 安装警告(插件已装但共享依赖缺失/回退等,非致命) */
+  warnings?: string[]
 }
 
 export interface Task {

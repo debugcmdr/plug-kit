@@ -1,6 +1,8 @@
 use crate::registry::{Registry, DepEntry};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use once_cell::sync::Lazy;
@@ -12,6 +14,12 @@ pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .build()
         .expect("reqwest client build failed")
 });
+
+/// 依赖下载硬上限(单个文件,全局):1 GiB。
+/// 远高于当前最大合法依赖(gyan.dev win full ffmpeg ~200MB)的 5 倍余量,
+/// 覆盖未来工具增长;同时防止异常/恶意 URL 单次下载写爆磁盘。
+/// 上限约束"单次下载"粒度,与插件/依赖数量无关(数量由引用计数+孤儿清理治理)。
+const MAX_DEP_DOWNLOAD_BYTES: u64 = 1 << 30; // 1 GiB
 
 pub struct DependencyCache {
     cache_dir: PathBuf,
@@ -180,12 +188,17 @@ impl DependencyCache {
         let key = format!("{}/{}", name, version);
         let dest_dir = self.cache_dir.join(&key).join(platform);
 
-        // Check if already exists (cache dir present => binary already there)
-        if dest_dir.exists() && dest_dir.join(binary_name).exists() {
+        // 缓存命中:文件必须存在且有效(非空;sha256 固化时再校验内容一致)。
+        // 防中断下载残留的 0 字节/半截文件被静默复用("幽灵缓存"——运行失败但
+        // 报错与真实原因脱节,极难排查)。
+        let bin_path = dest_dir.join(binary_name);
+        if self.is_valid_cached_binary(&bin_path, sha256) {
             // Increment refcount
             self.increment_refcount(&mut registry, name, version, platform, ref_plugins)?;
             return Ok(dest_dir);
         }
+        // 无效缓存(0 字节/损坏):删除后重新下载
+        let _ = fs::remove_dir_all(&dest_dir);
 
         // Download
         self.download_dependency(url, &dest_dir, sha256, checksum_url, binary_name).await?;
@@ -208,6 +221,23 @@ impl DependencyCache {
         registry.save(&self.registry_path).map_err(|e| e.to_string())?;
         
         Ok(dest_dir)
+    }
+
+    /// 校验缓存二进制有效:文件存在且非空;sha256 已固化时再校验内容一致。
+    /// 未固化平台仅做非空检查(完整校验依赖 G-8 逐平台固化 sha256)。
+    fn is_valid_cached_binary(&self, bin_path: &Path, expected_sha256: &str) -> bool {
+        let Ok(meta) = std::fs::metadata(bin_path) else { return false };
+        if !meta.is_file() || meta.len() == 0 {
+            return false;
+        }
+        if expected_sha256.is_empty() {
+            return true; // 未固化平台:仅非空
+        }
+        // 固化平台:读文件校验 sha256(依赖安装为一次性低频操作,成本可接受)
+        match std::fs::read(bin_path) {
+            Ok(bytes) => crate::security::validate_sha256(&bytes, expected_sha256).is_ok(),
+            Err(_) => false,
+        }
     }
 
     fn acquire_lock(&self) -> Result<std::fs::File, String> {
@@ -351,6 +381,8 @@ impl DependencyCache {
     }
 
     /// 单源下载 + 完整性校验 + 落盘。校验失败视为该源不可用(交由上层降级)。
+    /// 流式下载:逐 chunk 写临时文件 + 增量 sha256(内存恒定,不随文件大小增长);
+    /// 超过 MAX_DEP_DOWNLOAD_BYTES 硬上限即 abort 下载 + 删除临时文件 + 报错。
     async fn download_and_verify(
         &self,
         src: &str,
@@ -367,27 +399,60 @@ impl DependencyCache {
         if !resp.status().is_success() {
             return Err(format!("Download failed with status {}", resp.status()));
         }
-        let bytes = resp.bytes()
-            .await
-            .map_err(|e| format!("Read bytes failed: {}", e))?;
 
-        // Verify SHA256:
-        // 1) 固定 sha256(若配置);
-        // 2) 否则从官方校验和文件(SHA2-256SUMS)动态校验 —— yt-dlp pinned 后完整性可验证。
-        if !sha256.is_empty() {
-            crate::security::validate_sha256(&bytes, sha256)
-                .map_err(|e| e.to_string())?;
+        // 校验目标先就绪:1) 固定 sha256(若配置);2) 否则从官方校验和文件动态校验(yt-dlp)。
+        // 期望值为空时(未固化平台且无 checksum 源)仅做大小上限,不做哈希校验(见 G-8)。
+        let expected = if !sha256.is_empty() {
+            sha256.to_string()
         } else if let Some(cu) = checksum_url {
             let asset_name = original_url.rsplit('/').next().unwrap_or(binary_name);
-            let checksum = Self::fetch_checksum_for(cu, asset_name).await?;
-            crate::security::validate_sha256(&bytes, &checksum)
-                .map_err(|e| e.to_string())?;
+            Self::fetch_checksum_for(cu, asset_name).await?
+        } else {
+            String::new()
+        };
+
+        // 流式下载:逐 chunk 写 tmp + 增量哈希(内存恒定,不收集全部块)。
+        let tmp = dest.join("download.tmp");
+        let mut out = fs::File::create(&tmp)
+            .map_err(|e| format!("Create tmp file: {}", e))?;
+        let mut resp = resp;
+        let mut hasher = sha2::Sha256::new();
+        let mut total: u64 = 0;
+        while let Some(chunk) = resp.chunk()
+            .await
+            .map_err(|e| format!("Read chunk failed: {}", e))?
+        {
+            total += chunk.len() as u64;
+            // 硬上限:超过阈值立即中止(chunk 循环退出即放弃后续读取 = abort http),
+            // 删除临时文件并返回错误。
+            if total > MAX_DEP_DOWNLOAD_BYTES {
+                drop(resp);
+                drop(out);
+                let _ = fs::remove_file(&tmp);
+                return Err(format!(
+                    "下载超过大小上限({} MB),已中止: {}",
+                    MAX_DEP_DOWNLOAD_BYTES / (1024 * 1024),
+                    src
+                ));
+            }
+            hasher.update(&chunk);
+            out.write_all(&chunk)
+                .map_err(|e| format!("Write chunk failed: {}", e))?;
+        }
+        out.flush().map_err(|e| format!("Flush tmp file: {}", e))?;
+        drop(out);
+
+        // 增量哈希结果与期望值比较(期望值非空时);失败即删 tmp,交由上层降级其他源。
+        let actual = format!("{:x}", hasher.finalize());
+        if !expected.is_empty() && actual != expected {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!(
+                "SHA256 mismatch: expected {}, got {}",
+                expected, actual
+            ));
         }
 
-        // Write to temp then rename to the binary name
-        let tmp = dest.join("download.tmp");
-        fs::write(&tmp, bytes)
-            .map_err(|e| format!("Write file: {}", e))?;
+        // 落盘:rename 到最终名(tmp 与最终名同目录 = 同文件系统,必成功)。
         fs::rename(&tmp, dest.join(binary_name))
             .map_err(|e| format!("Rename file: {}", e))?;
 
@@ -464,7 +529,9 @@ impl DependencyCache {
             for f in prd.flatten() {
                 let p = f.path();
                 let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if fname.starts_with('.') || fname.starts_with("download.tmp") || !p.is_file() {
+                // 过滤隐藏/下载中残留 + 0 字节损坏文件(中断残留不可回退复用)
+                let ok = p.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+                if fname.starts_with('.') || fname.starts_with("download.tmp") || !ok {
                     continue;
                 }
                 let mtime = p.metadata()
@@ -494,7 +561,9 @@ impl DependencyCache {
             for e in rd.flatten() {
                 let p = e.path();
                 let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if fname.starts_with('.') || fname.starts_with("download.tmp") || !p.is_file() {
+                // 过滤隐藏/下载中残留 + 0 字节损坏文件(中断残留不可回退复用)
+                let ok = p.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+                if fname.starts_with('.') || fname.starts_with("download.tmp") || !ok {
                     continue;
                 }
                 if best.as_ref().map_or(true, |(ts, _)| entry.last_accessed > *ts) {

@@ -16,15 +16,21 @@ mkdir -p "$DEST"
 
 SYNCED_HASHES_FILE="$ROOT/.dev/watched-hashes"
 
-# 计算目录的"指纹"(所有文件按路径排序的 inode+mtime 拼接)
+# 计算目录的"指纹"(所有文件按路径排序的 inode+mtime 拼接);
+# shared 公共模块变化同样计入指纹(改共享逻辑会触发各插件同步)
 dir_hash() {
   local dir="$1"
   if [[ ! -d "$dir" ]]; then
     echo "missing"
     return
   fi
-  # macOS/BSD find 不支持 -printf,用 stat 获取 mtime
-  (cd "$dir" && find . -type f | sort | xargs -I{} stat -f '%m %N' {}) | md5 | awk '{print $1}'
+  # macOS/BSD find 不支持 -printf;stat 兼容 Linux(-c)与 BSD(-f)
+  {
+    (cd "$dir" && find . -type f | sort | xargs -I{} sh -c 'stat -c "%Y %n" "{}" 2>/dev/null || stat -f "%m %N" "{}"')
+    if [[ -d "$ROOT/plugins/shared" ]]; then
+      (cd "$ROOT/plugins/shared" && find . -type f | sort | xargs -I{} sh -c 'stat -c "%Y %n" "{}" 2>/dev/null || stat -f "%m %N" "{}"')
+    fi
+  } | md5 | awk '{print $1}'
 }
 
 sync_plugin() {
@@ -50,6 +56,8 @@ sync_plugin() {
     echo "[$(date '+%H:%M:%S')] 检测到 $id 变化,同步中..."
     rm -rf "$dst"
     cp -R "$src" "$dst"
+    # 公共共享模块(方案 B):shared/_*.py 复制进该插件 tool/(与打包逻辑一致)
+    cp "$ROOT/plugins/shared/"*.py "$dst/tool/" 2>/dev/null || true
     chmod +x "$dst/tool/plugkit-"* 2>/dev/null || true
     # 更新指纹
     sed -i '' "/^${id}=/d" "$SYNCED_HASHES_FILE" 2>/dev/null || true
@@ -66,7 +74,8 @@ if [[ $# -gt 0 ]]; then
   done
 else
   for d in "$ROOT"/plugins/*/; do
-    [[ -d "$d" ]] && TARGETS+=("$(basename "$d")")
+    # 跳过公共共享模块目录(shared 非插件,随各插件同步)
+    [[ -d "$d" ]] && [[ "$(basename "$d")" != "shared" ]] && TARGETS+=("$(basename "$d")")
   done
 fi
 

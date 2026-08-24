@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useMessage } from 'naive-ui'
 import { tasks, tasksLoading, fetchTasks, cancelTask, pauseTask, resumeTask, installedVersion } from '../stores/plugins'
 import type { Task } from '../types'
 import AppIcon from './AppIcon.vue'
@@ -8,6 +9,7 @@ import AppIcon from './AppIcon.vue'
 const props = defineProps<{ pluginId?: string }>()
 const statusFilter = ref<string>('all')
 const SEARCH_PERSIST = 'task_filter_status'
+const message = useMessage()
 
 // 插件 id → 显示名映射:任务行显示左侧插件名(如「万能下载」而非 download)。
 const pluginNames = ref<Record<string, string>>({})
@@ -99,7 +101,9 @@ async function openOutputDir(task: Task) {
   try {
     await invoke('open_in_folder', { path: task.output_path })
   } catch (e) {
+    // 用户点击无反馈会误以为功能失效——明确提示失败原因
     console.error('打开输出文件夹失败:', e)
+    message.error(`打开输出文件夹失败: ${e}`)
   }
 }
 

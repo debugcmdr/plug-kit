@@ -51,7 +51,15 @@ async function installPlugin(plugin: typeof marketPlugins.value[0]) {
   message.info(`正在安装 ${plugin.name}...`)
   try {
     const r = await installFromStore(plugin.id)
-    r.success ? message.success(r.message) : message.error(r.message)
+    if (r.success) {
+      message.success(r.message)
+      // 依赖安装警告(如下载失败回退缓存):透出给用户,而非只进日志
+      if (r.warnings && r.warnings.length) {
+        r.warnings.forEach(w => message.warning(w))
+      }
+    } else {
+      message.error(r.message)
+    }
   } catch (e) {
     message.error(`安装失败: ${e}`)
   }

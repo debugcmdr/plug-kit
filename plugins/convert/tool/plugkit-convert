@@ -2,7 +2,7 @@
 """plugkit-convert - 格式转换工具(基于 ffmpeg)
 
 三大类转换:
-- 视频: mp4 / mkv / mov / webm / avi / gif(视频转 gif)
+- 视频: mp4(h264/h265) / mkv / mov / webm / avi / gif(视频转 gif)
 - 音频: mp3 / m4a / wav / flac / ogg
 - 图片: jpg / png / webp / heic
 """
@@ -12,87 +12,27 @@ import re
 import subprocess
 import sys
 import time
+from functools import lru_cache
 
-
-def progress(percent, message=None, speed=None, eta=None, file_name=None, output_path=None):
-    line = {"type": "progress", "percent": percent}
-    if message:
-        line["message"] = message
-    if speed:
-        line["speed"] = speed
-    if eta:
-        line["eta"] = eta
-    if file_name:
-        line["file_name"] = file_name
-    if output_path:
-        line["output_path"] = output_path
-    print(json.dumps(line, ensure_ascii=False), flush=True)
-
-
-def format_hms(seconds):
-    """秒数 → HH:MM:SS / MM:SS(用于 ETA 倒计时)。"""
-    seconds = int(round(seconds))
-    if seconds < 0:
-        seconds = 0
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
-
-
-def result(data):
-    print(json.dumps({"type": "result", "success": True, "data": data}, ensure_ascii=False), flush=True)
-
-
-def error(code, message):
-    print(json.dumps({"type": "error", "code": code, "message": message}, ensure_ascii=False), flush=True)
-
-
-def dep(name):
-    key = f"PLUGKIT_{name.upper().replace('-', '_')}"
-    if key in os.environ:
-        return os.environ[key]
-    return name
+# 公共模块:打包时由 scripts 复制进 tool/(生产);仓库源码运行时从 shared 加载(开发/测试)。
+# 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
+try:
+    from _protocol import progress, result, error, dep, parse_args  # noqa: F401
+except ImportError:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
+    from _protocol import progress, result, error, dep, parse_args  # noqa: F401
 
 
 FFMPEG = dep("ffmpeg")
 FFPROBE = dep("ffprobe")
 
-VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".mpg", ".mpeg", ".rmvb"}
-AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".wma", ".aiff"}
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tiff"}
+# 输入白名单:与 UI INPUT_EXTS 保持一致(新增 m2ts/mts/vob/3g2、m4b/mka、psd,
+# 并补齐 UI 已有的 opus/ape/amr、avif/ico)。CLI 按输出扩展名分发,输入扩展名
+# 集合保持与 UI 同步以防白名单漂移(有单测断言)。
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".mpg", ".mpeg", ".rmvb", ".m2ts", ".mts", ".vob", ".3g2"}
+AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".wma", ".aiff", ".opus", ".ape", ".amr", ".m4b", ".mka"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tiff", ".avif", ".ico", ".psd"}
 
-
-def parse_args(argv):
-    args = {}
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a.startswith("--"):
-            key = a[2:].split("=")[0].replace("-", "_")
-            if "=" in a:
-                args[key] = a.split("=", 1)[1]
-            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
-                args[key] = argv[i + 1]
-                i += 1
-            else:
-                args[key] = True
-        i += 1
-    return args
-
-
-def detect_category(path):
-    """按扩展名判断输入媒体类别。"""
-    ext = os.path.splitext(path)[1].lower()
-    if ext in VIDEO_EXTS:
-        return "video"
-    if ext in AUDIO_EXTS:
-        return "audio"
-    if ext in IMAGE_EXTS:
-        return "image"
-    return "unknown"
 
 
 def probe_duration(path):
@@ -167,8 +107,8 @@ def resolve_output(input_path, output_path):
     场景1(同路径): MP4→MP4 且输出==输入 —— ffmpeg 读改写同一文件会失败/损坏,
                   改为同目录 `_converted` 后缀。
     场景2(同名冲突): 设置了保存目录时,不同目录的同名文件(/a/1.mp4 与 /b/1.mp4)
-                  都会映射到 saveDir/1.mp4,两个任务并发写同一路径,后完成的覆盖
-                  先完成的 → 输出已存在时自动追加 (1)(2)… 序号。
+                  都会映射到 saveDir/1.mp4,两个任务并发写同一路径 → 用原子占位
+                  (O_CREAT|O_EXCL)保证同一路径只有一个任务拿到,其余自动加序号。
     """
     inp = os.path.abspath(input_path)
     out = os.path.abspath(output_path)
@@ -176,25 +116,27 @@ def resolve_output(input_path, output_path):
         d = os.path.dirname(out)
         base = os.path.splitext(os.path.basename(out))[0]
         ext = os.path.splitext(out)[1]
-        return _unique_path(os.path.join(d, f"{base}_converted{ext}"))
-    if os.path.exists(out):
-        return _unique_path(out)
-    return output_path
+        return _reserve_path(os.path.join(d, f"{base}_converted{ext}"))
+    return _reserve_path(out)
 
 
-def _unique_path(path):
-    """若 path 已存在,在文件名后追加 (1)、(2)… 直到不冲突。"""
-    if not os.path.exists(path):
-        return path
-    d = os.path.dirname(os.path.abspath(path))
+def _reserve_path(path):
+    """原子占位输出路径:O_CREAT|O_EXCL 独占创建,并发窗口内不会有第二个任务拿到同一路径。
+    已存在(含被并发占位)则追加 (1)(2)… 序号。ffmpeg 以 -y 覆盖占位文件。"""
+    d = os.path.dirname(os.path.abspath(path)) or "."
     base = os.path.splitext(os.path.basename(path))[0]
     ext = os.path.splitext(path)[1]
+    os.makedirs(d, exist_ok=True)
+    cand = path
     i = 1
     while True:
-        cand = os.path.join(d, f"{base} ({i}){ext}")
-        if not os.path.exists(cand):
+        try:
+            fd = os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
             return cand
-        i += 1
+        except FileExistsError:
+            cand = os.path.join(d, f"{base} ({i}){ext}")
+            i += 1
 
 
 def ensure_output_dir(output_path):
@@ -204,8 +146,18 @@ def ensure_output_dir(output_path):
         os.makedirs(d, exist_ok=True)
 
 
+def cleanup_if_empty(path):
+    """清理 0 字节占位文件:O_EXCL 占位在编码器缺失等提前失败分支未写入,
+    残留的空文件会让用户误以为输出已生成。仅删 size==0 的文件,不动 ffmpeg 半成品。"""
+    try:
+        if os.path.exists(path) and os.path.getsize(path) == 0:
+            os.remove(path)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- 视频转换
-def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None):
+def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None, codec=None):
     output_path = resolve_output(input_path, output_path)
     ensure_output_dir(output_path)
     duration = probe_duration(input_path)
@@ -222,20 +174,43 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
                "-vf", "fps=10,scale=480:-1:flags=lanczos", "-loop", "0"]
         cmd.append(output_path)
     elif ext == ".webm":
+        if not has_encoder("libvpx-vp9"):
+            cleanup_if_empty(output_path)
+            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libvpx-vp9 编码器,无法转 WebM。可用: mp4/mkv/mov")
+            return
         cmd = [FFMPEG, "-y", "-i", input_path,
                "-c:v", "libvpx-vp9", "-preset", preset_map.get(preset, "medium"),
                "-b:v", "0", "-crf", crf or "32", "-c:a", "libopus", "-b:a", audio_bitrate or "96k"]
         cmd.append(output_path)
     elif ext == ".mp4":
-        cmd = [FFMPEG, "-y", "-i", input_path,
-               "-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
-               "-crf", crf or "23", "-pix_fmt", "yuv420p", "-c:a", "aac",
-               "-b:a", audio_bitrate or "128k"]
+        if codec == "hevc":
+            # H.265: 小体积但转码慢;缺编码器时给明确提示而不是 ffmpeg 报错。
+            if not has_encoder("libx265"):
+                cleanup_if_empty(output_path)
+                error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)")
+                return
+            cmd = [FFMPEG, "-y", "-i", input_path,
+                   "-c:v", "libx265", "-preset", preset_map.get(preset, "medium"),
+                   "-crf", crf or "23", "-tag:v", "hvc1", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", audio_bitrate or "128k"]
+        else:
+            cmd = [FFMPEG, "-y", "-i", input_path,
+                   "-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
+                   "-crf", crf or "23", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                   "-b:a", audio_bitrate or "128k"]
         cmd.append(output_path)
     else:
         # mkv / mov / avi / m4v / ts / mpg / flv 等
         cmd = [FFMPEG, "-y", "-i", input_path]
-        if ext in (".avi", ".mpg", ".mpeg", ".flv"):
+        if ext == ".mkv" and codec == "hevc":
+            # MKV 容器 + H.265(无需 hvc1 tag,那是 mp4 的要求)
+            if not has_encoder("libx265"):
+                cleanup_if_empty(output_path)
+                error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)")
+                return
+            cmd += ["-c:v", "libx265", "-preset", preset_map.get(preset, "medium"),
+                    "-crf", crf or "23", "-c:a", "aac", "-b:a", audio_bitrate or "128k"]
+        elif ext in (".avi", ".mpg", ".mpeg", ".flv"):
             cmd += ["-c:v", "libx264", "-crf", crf or "23", "-c:a", "aac"]
         elif ext in (".ts", ".m4v"):
             cmd += ["-c:v", "copy", "-c:a", "aac"]
@@ -273,6 +248,10 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
         ".amr": "libopencore_amrnb",
     }
     codec = codec_map.get(ext, "libmp3lame")
+    if ext == ".ogg" and not has_encoder("libvorbis"):
+        # libvorbis 缺失时回退 libopus(ogg 容器原生支持 opus;
+        # 原生 vorbis 编码器在 ffmpeg 8.x 实测不可用,不能作为回退)
+        codec = "libopus"
 
     cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", codec]
     if ext in (".mp3", ".m4a"):
@@ -280,7 +259,8 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
     elif ext == ".wav":
         cmd += ["-ar", "44100"]
     elif ext == ".ogg":
-        cmd += ["-q:a", "4"]
+        # opus 编码器用 -b:a,vorbis 用 -q:a,按实际选中的 codec 给参数
+        cmd += ["-b:a", audio_bitrate or "128k"] if codec == "libopus" else ["-q:a", "4"]
     elif ext == ".opus":
         cmd += ["-b:a", audio_bitrate or "128k"]
     cmd.append(output_path)
@@ -297,8 +277,9 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
     })
 
 
+@lru_cache(maxsize=None)
 def has_encoder(name):
-    """检测 ffmpeg 是否有指定编码器。"""
+    """检测 ffmpeg 是否有指定编码器(进程内缓存,批量转换不重复探测)。"""
     try:
         proc = subprocess.run([FFMPEG, "-hide_banner", "-encoders"],
                               capture_output=True, text=True, timeout=10)
@@ -308,6 +289,12 @@ def has_encoder(name):
 
 
 # ---------------------------------------------------------------- 图片转换
+# JPG 的 -q:v 是量化标度(1~31,越小越好),与 UI 的"90/75/60(越大越好)"语义相反,
+# 直接透传 90/75/60 会被 ffmpeg clamp 到最差质量(曾实测三者输出完全一致)。
+# 这里映射: 90→2(高) 75→5(中) 60→8(低)。
+JPG_Q_MAP = {"90": "2", "75": "5", "60": "8"}
+
+
 def convert_image(input_path, output_path, quality="90"):
     output_path = resolve_output(input_path, output_path)
     ensure_output_dir(output_path)
@@ -317,9 +304,10 @@ def convert_image(input_path, output_path, quality="90"):
     ext = os.path.splitext(output_path)[1].lower()
     cmd = [FFMPEG, "-y", "-i", input_path]
     if ext in (".jpg", ".jpeg"):
-        cmd += ["-q:v", quality, "-qmin", "1"]
+        cmd += ["-q:v", JPG_Q_MAP.get(quality, "5"), "-qmin", "1"]
     elif ext == ".webp":
         if not has_encoder("libwebp"):
+            cleanup_if_empty(output_path)
             error("ENCODER_MISSING", "当前 ffmpeg 缺少 libwebp 编码器,无法转 WebP。可用: jpg/png/heic")
             return
         cmd += ["-quality", quality]
@@ -327,9 +315,21 @@ def convert_image(input_path, output_path, quality="90"):
         cmd += ["-compression_level", "6"]
     elif ext == ".heic":
         if not has_encoder("libx265"):
+            cleanup_if_empty(output_path)
             error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 HEIC。可用: jpg/png/webp")
             return
         cmd += ["-c:v", "libx265", "-tag:v", "hvc1"]
+    elif ext == ".avif":
+        # AVIF = AV1 容器:libsvtav1 快、libaom-av1 质量好;都缺则明确提示。
+        # 注意:不用 -still-picture(ffmpeg 8.x 的 libsvtav1 已不暴露该选项,会报错)。
+        if has_encoder("libsvtav1"):
+            cmd += ["-c:v", "libsvtav1", "-crf", "30", "-b:v", "0"]
+        elif has_encoder("libaom-av1"):
+            cmd += ["-c:v", "libaom-av1", "-crf", "30", "-b:v", "0"]
+        else:
+            cleanup_if_empty(output_path)
+            error("ENCODER_MISSING", "当前 ffmpeg 缺少 AV1 编码器(libsvtav1/libaom),无法转 AVIF。可用: jpg/png/webp")
+            return
     cmd.append(output_path)
 
     try:
@@ -363,11 +363,11 @@ def convert_image(input_path, output_path, quality="90"):
 
 # ---------------------------------------------------------------- 探测
 def probe():
-    """探测输入文件类别 + 支持的目标格式列表。"""
+    """探测支持的目标格式列表(与 UI FORMATS 的 value 对齐)。"""
     result({
-        "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif"],
-        "audio_formats": ["mp3", "m4a", "wav", "flac", "ogg"],
-        "image_formats": ["jpg", "png", "webp", "heic"],
+        "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif", "m4v", "ts", "mpg", "flv", "mp3", "m4a", "wav"],
+        "audio_formats": ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "aiff"],
+        "image_formats": ["jpg", "png", "webp", "avif", "gif", "heic", "bmp", "tiff"],
         "has_ffmpeg": True,
     })
 
@@ -398,9 +398,10 @@ def main():
             elif out_ext in IMAGE_EXTS:
                 convert_image(inp, args["output"], args.get("quality", "90"))
             else:
-                # 否则按输入类别走视频转换
+                # 否则按输入类别走视频转换;codec 仅影响 mp4(h264 默认 / hevc)
                 convert_video(inp, args["output"], args.get("preset", "medium"),
-                              args.get("crf"), args.get("audio_bitrate"))
+                              args.get("crf"), args.get("audio_bitrate"),
+                              args.get("codec") or "h264")
         else:
             error("UNKNOWN_CMD", f"未知命令: {cmd}")
     except Exception as e:

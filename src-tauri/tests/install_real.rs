@@ -25,7 +25,11 @@ fn installed_layout_ok(id: &str) -> bool {
     tool.is_dir()
 }
 
+/// 真实 GitHub 发布链路测试:依赖远程仓库已发布插件包 + 市场清单已推送。
+/// 开发期(未发布/本地清单未推送)必然 404 失败——标记 ignore,
+/// 发布演练时用 `cargo test --ignored --test install_real` 跑。
 #[tokio::test]
+#[ignore]
 async fn install_convert_from_github() {
     clean_installed("convert");
     let pm = PluginManager::new();

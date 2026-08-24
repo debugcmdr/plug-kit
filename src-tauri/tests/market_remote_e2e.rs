@@ -1,10 +1,12 @@
 //! Remote market e2e test: verifies the real GitHub manifest + release download
 //! pipeline that the shipped DMG will use. Needs network access to GitHub.
 //! Mirrors are disabled in this test to avoid proxy interference.
+//! 开发期(未发布/无网络)必然失败,标记 ignore——发布演练时用 `cargo test --ignored` 跑。
 
 use plugkit_lib::api;
 
 #[tokio::test]
+#[ignore]
 async fn real_github_market_flow() {
     // Unset local override; use the default (real GitHub Raw URL).
     std::env::remove_var("PLUGKIT_MANIFEST_URL");

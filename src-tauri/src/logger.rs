@@ -1,9 +1,14 @@
 use std::fs;
 use std::io::Write;
 use chrono::Local;
+use once_cell::sync::Lazy;
 
 /// 日志保留天数:超过该天数的 .log 文件在写入时自动清理。
 const LOG_RETENTION_DAYS: i64 = 14;
+/// 日志清理最小间隔:避免每次写日志都全量 read_dir 扫描目录(高频 IO)。
+const CLEANUP_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+static LAST_CLEANUP: Lazy<std::sync::Mutex<Option<std::time::Instant>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
 
 pub struct Logger;
 
@@ -62,6 +67,14 @@ impl Logger {
     }
 
     fn cleanup_old_logs(log_dir: &std::path::Path) {
+        // 降频:60s 内只清理一次(原实现每次写日志都全量扫描目录)
+        {
+            let mut last = LAST_CLEANUP.lock().unwrap();
+            if last.map_or(false, |t| t.elapsed() < CLEANUP_MIN_INTERVAL) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
         let Ok(entries) = fs::read_dir(log_dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();

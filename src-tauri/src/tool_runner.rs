@@ -54,6 +54,33 @@ fn resume_process(child: &Child) {
     }
 }
 
+/// 杀进程树(取消/超时):Unix 对进程组发 SIGTERM → 短暂等待 → SIGKILL 兜底,
+/// Windows 用 taskkill /T /F(含子进程)。仅 kill 主进程会让 yt-dlp 拉起的
+/// ffmpeg 残留为孤儿继续写盘——进程组信号可一并终止。
+async fn kill_process_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        #[cfg(unix)]
+        {
+            // 负数 pid = 进程组信号(子进程放入了独立进程组 process_group(0))
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &format!("-{}", pid)])
+                .status();
+            // 给组内成员 200ms 优雅退出,再补 SIGKILL 防残留
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &format!("-{}", pid)])
+                .status();
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .status();
+        }
+    }
+    let _ = child.kill().await; // 主进程兜底(SIGKILL)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PluginOutput {
@@ -94,10 +121,23 @@ pub struct ToolRunner {
 impl ToolRunner {
     pub fn new() -> Self {
         Self {
+            // 任务工作目录与插件安装临时目录(~/.plugkit/tmp)分离：
+            // 安装插件时清理 tmp/{plugin_id} 不会误删运行中任务的工作目录。
             work_dir: dirs::home_dir()
-                .map(|d| d.join(".plugkit/tmp"))
+                .map(|d| d.join(".plugkit/work"))
                 .unwrap_or_default(),
         }
+    }
+
+    /// 前置校验失败统一处理：注销控制标志 + 任务状态置 Failed。
+    /// (修复状态机闭环缺口：此前 invoke 前置校验 `?` 提前返回，
+    /// 任务中心的任务永久停留在 Pending。)
+    async fn fail_task(task_id: &str, msg: &str) {
+        crate::task_registry::unregister(task_id).await;
+        crate::task_queue::TaskQueue::update_status_with_error(
+            task_id, crate::task_queue::TaskStatus::Failed, Some(msg.to_string()),
+        ).await;
+        log::error!("[{}] {}", task_id, msg);
     }
 
     /// Invoke a plugin CLI command.
@@ -121,16 +161,36 @@ impl ToolRunner {
         app: Option<&tauri::AppHandle>,
         task_id: Option<String>,
     ) -> Result<Value, String> {
-        let plugin_dir = self.plugin_dir(plugin_id);
-        let manifest = self.read_manifest(plugin_id)?;
-        let command = manifest.commands.get(command_name)
-            .ok_or_else(|| format!("Command '{}' not found in manifest", command_name))?;
-
-        let exe = Self::find_executable(&plugin_dir.join(manifest.tool_dir()), &manifest)?;
-        let args = self.substitute_args(&command.stdin_args, &params, &manifest);
-
         // 任务 ID：bridge 层创建后透传；独立调用(测试/无 UI 场景)则内部生成。
         let task_id = task_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // 前置校验(错误前置)：manifest/命令/exe 任一缺失即任务失败。
+        // 状态同步更新为 Failed——否则任务中心永久停留 Pending(状态机不闭环)。
+        let plugin_dir = self.plugin_dir(plugin_id);
+        let manifest = match self.read_manifest(plugin_id) {
+            Ok(m) => m,
+            Err(e) => {
+                Self::fail_task(&task_id, &e).await;
+                return Err(e);
+            }
+        };
+        let command = match manifest.commands.get(command_name) {
+            Some(c) => c,
+            None => {
+                let msg = format!("Command '{}' not found in manifest", command_name);
+                Self::fail_task(&task_id, &msg).await;
+                return Err(msg);
+            }
+        };
+        let exe = match Self::find_executable(&plugin_dir.join(manifest.tool_dir()), &manifest) {
+            Ok(e) => e,
+            Err(msg) => {
+                Self::fail_task(&task_id, &msg).await;
+                return Err(msg);
+            }
+        };
+        let args = self.substitute_args(&command.stdin_args, &params, &manifest);
+
         // 注册控制标志(提前到并发排队之前:排队中的任务也能被取消/暂停)。
         let control = crate::task_registry::register(&task_id).await;
         let cancel_flag = control.cancel.clone();
@@ -247,11 +307,19 @@ impl ToolRunner {
         let stderr_task = tokio::spawn(Self::read_stderr(stderr));
 
         // Wait for the process while allowing cancel / pause / timeout.
+        // json 模式命令(list-formats/probe 等短命令)带 5 分钟超时防挂死；
+        // progress 模式(长下载/转换)不设超时。
         let is_progress = command.output_mode == "progress+json";
-        let outcome = Self::await_with_cancel(&mut child, &cancel_flag, &pause_flag, is_progress).await;
+        let timeout = if is_progress {
+            None
+        } else {
+            Some(std::time::Duration::from_secs(300))
+        };
+        let outcome = Self::await_with_cancel(&mut child, &cancel_flag, &pause_flag, is_progress, timeout).await;
         if let Some(flag) = outcome.killed {
-            // Cancelled / timed out
-            let _ = child.kill().await;
+            // Cancelled / timed out：杀整个进程树(进程组 SIGTERM→SIGKILL)，
+            // 避免只杀主进程留下孤儿 ffmpeg(yt-dlp 拉起的)继续写盘。
+            kill_process_tree(&mut child).await;
             let _ = stdout_task.await;
             let _ = stderr_task.await;
             crate::task_registry::unregister(&task_id).await;
@@ -315,8 +383,22 @@ impl ToolRunner {
                 // 落盘日志页:结构化任务错误(错误码 + 完整 message,比插件 UI 更详细)。
                 crate::logger::Logger::task_error(&plugin_id, &task_id, &e.code, &e.message);
             }
-            _ => {
+            Ok(PluginOutput::Result(_)) => {
                 crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Completed).await;
+            }
+            _ => {
+                // 协议违规:最后一行不是 result/error(如 progress 行或不可解析输出)。
+                // 静默吞掉会让插件 UI 拿到错误形状的数据——明确报错并落日志。
+                let msg = if final_outcome.is_ok() {
+                    "插件输出协议违规:最后一行应为 result 或 error".to_string()
+                } else {
+                    format!("插件输出无法解析: {}", last)
+                };
+                crate::task_queue::TaskQueue::update_status_with_error(
+                    &task_id, crate::task_queue::TaskStatus::Failed, Some(msg.clone()),
+                ).await;
+                log::error!("[{}] {}", task_id, msg);
+                crate::logger::Logger::task_error(&plugin_id, &task_id, "BAD_PROTOCOL", &msg);
             }
         }
         let _ = std::fs::remove_dir_all(&work_dir);
@@ -324,8 +406,7 @@ impl ToolRunner {
         match final_outcome {
             Ok(PluginOutput::Result(r)) => Ok(r.data),
             Ok(PluginOutput::Error(e)) => Err(e.message),
-            Ok(_) => Ok(serde_json::from_str(&last).unwrap_or(Value::Null)),
-            Err(_) => Ok(serde_json::json!({ "raw_output": last })),
+            _ => Err("插件输出协议违规:最后一行应为 result 或 error".to_string()),
         }
     }
 
@@ -333,13 +414,22 @@ impl ToolRunner {
     /// 取消(cancel)恒检查:json 模式命令(list-formats 等)也可被任务中心取消,
     /// 否则网络卡顿时任务永久 running 直到子进程自然退出。
     /// 暂停(pause)仅 progress 模式开启(watch_pause)——短命令暂停无意义。
+    /// `timeout`:Some 时超时后按 killed 返回(json 模式短命令防挂死)。
     async fn await_with_cancel(
         child: &mut Child,
         cancel_flag: &Arc<AtomicBool>,
         pause_flag: &Arc<AtomicBool>,
         watch_pause: bool,
+        timeout: Option<std::time::Duration>,
     ) -> ProcessOutcome {
+        let deadline = timeout.map(|d| tokio::time::Instant::now() + d);
         loop {
+            // 超时(仅 json 模式):kill 由调用方执行,这里返回 killed 标记。
+            if let Some(deadline) = deadline {
+                if tokio::time::Instant::now() >= deadline {
+                    return ProcessOutcome { success: false, code: -1, killed: Some("Task timed out".into()) };
+                }
+            }
             // If cancellation was requested, stop waiting (始终检查).
             if cancel_flag.load(Ordering::SeqCst) {
                 return ProcessOutcome { success: false, code: -1, killed: Some("Task cancelled".into()) };

@@ -36,6 +36,13 @@ if datas[0] != datas[1]:
 
 errors = 0
 for p in datas[0]:
+    # 5. binaryUrl 格式门禁:必须是 github release 合法 URL,禁止空 tag 造成的
+    #    `releases/download//` 双斜杠坏 URL(package-plugins.sh 未传 tag 的旧 bug)。
+    bu = p.get('binaryUrl', '')
+    if not bu.startswith('https://github.com/') or '//download//' in bu or '/download//' in bu:
+        print(f"ERROR: {p['id']} binaryUrl 格式非法(可能空 tag): {bu}")
+        errors += 1
+        print("  提示:开发期 tag 为空时 binaryUrl 应为 releases/latest/download/...,运行 ./scripts/package-plugins.sh 重新生成")
     zip_path = pathlib.Path(plugin_dir) / f"{p['id']}-{p['version']}.zip"
     if not zip_path.exists():
         print(f"WARN: 未找到 {zip_path}(本地无打包产物时跳过 sha256 校验)")
@@ -69,8 +76,24 @@ for p in datas[0]:
                 print(f"ERROR: {zip_path.name} 内 manifest version={inner_ver} != 清单 version={p['version']}")
                 errors += 1
 
+        # 6. 公共共享模块一致性(方案 B):zip 内 tool/_*.py 必须与 plugins/shared/ 源码一致。
+        #    防"改了 shared 却漏跑打包脚本"导致发布旧逻辑(行为漂移)。
+        shared_dir = pathlib.Path('plugins/shared')
+        if shared_dir.is_dir():
+            for shared_py in sorted(shared_dir.glob('_*.py')):
+                in_zip = [n for n in z.namelist() if n.endswith(f"tool/{shared_py.name}")]
+                if not in_zip:
+                    # 该插件不使用此共享模块(如 convert 不含 _ytdlp),不算错误
+                    continue
+                src_sha = hashlib.sha256(shared_py.read_bytes()).hexdigest()
+                zip_sha = hashlib.sha256(z.read(in_zip[0])).hexdigest()
+                if src_sha != zip_sha:
+                    print(f"ERROR: {zip_path.name} 内 {shared_py.name} 与 plugins/shared/ 源码不一致——"
+                          f"改共享模块后必须重新运行 ./scripts/package-plugins.sh")
+                    errors += 1
+
 if errors:
     print(f"ERROR: {errors} 处校验失败")
     sys.exit(1)
-print("OK: 清单一致,插件包 sha256 校验通过,本地/zip 内 manifest 版本与清单一致")
+print("OK: 清单一致,插件包 sha256 校验通过,本地/zip 内 manifest 版本与清单一致,共享模块与源码一致")
 PYEOF

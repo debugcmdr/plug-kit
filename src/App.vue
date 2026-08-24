@@ -103,24 +103,25 @@ function relayResponse(reqId: string, resId: string, result: unknown, fallback: 
 window.addEventListener('message', (e) => {
   if (e.data?.type !== 'plugkit:invoke') return
   const { id, command, payload } = e.data
-  const source = activePlugin.value
-  if (!source) return
 
-  // 身份校验(S1):消息必须来自「当前激活插件」自己的 iframe。
-  // 否则恶意/后台 iframe 可伪造 plugkit:invoke 冒充其他插件调用命令、读写其配置。
-  // (响应仍按 pendingInvokes 记录的来源插件投递,不依赖此处校验,后台任务不受影响)
-  const frame = document.querySelector(
-    `iframe[data-plugin-id="${source}"]`
-  ) as HTMLIFrameElement | null
-  if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return
+  // 身份校验:消息必须来自「已挂载插件 iframe」之一(MainContent 用 v-show 常驻,
+  // 后台隐藏插件仍在跑 JS——只校验激活插件会让后台插件的合法 invoke 被丢弃)。
+  // 插件身份由其 DOM 位置(data-plugin-id)决定,消息来源必须是该 iframe 的
+  // contentWindow,外部窗口/其他来源无法伪造。
+  const frames = document.querySelectorAll<HTMLIFrameElement>('iframe[data-plugin-id]')
+  let sourcePlugin: string | null = null
+  for (const f of frames) {
+    if (f.contentWindow === e.source) { sourcePlugin = f.dataset.pluginId || null; break }
+  }
+  if (!sourcePlugin) return
 
-  pendingInvokes.set(id, { pluginId: source, ts: Date.now() })
-  invoke('bridge_message', { pluginId: source, msg: { id, command, payload } })
+  pendingInvokes.set(id, { pluginId: sourcePlugin, ts: Date.now() })
+  invoke('bridge_message', { pluginId: sourcePlugin, msg: { id, command, payload } })
     .then((res: any) => {
-      relayResponse(res.id ?? id, res.id ?? id, res.result, source)
+      relayResponse(res.id ?? id, res.id ?? id, res.result, sourcePlugin!)
     })
     .catch((err: any) => {
-      relayResponse(id, id, { Err: String(err) }, source)
+      relayResponse(id, id, { Err: String(err) }, sourcePlugin!)
     })
 })
 </script>

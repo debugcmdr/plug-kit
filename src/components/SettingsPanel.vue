@@ -31,14 +31,22 @@ async function cleanOrphanCache() {
   }
 }
 
-// 打开日志目录 / 数据目录
+// 打开日志目录 / 数据目录(失败明确提示,不再静默产生 unhandled rejection)
 async function openLogDir() {
-  const home = await invoke<string>('get_home_dir')
-  await invoke('open_in_folder', { path: `${home}/.plugkit/logs` })
+  try {
+    const home = await invoke<string>('get_home_dir')
+    await invoke('open_in_folder', { path: `${home}/.plugkit/logs` })
+  } catch (e) {
+    message.error(`打开日志目录失败: ${e}`)
+  }
 }
 async function openDataDir() {
-  const home = await invoke<string>('get_home_dir')
-  await invoke('open_in_folder', { path: `${home}/.plugkit` })
+  try {
+    const home = await invoke<string>('get_home_dir')
+    await invoke('open_in_folder', { path: `${home}/.plugkit` })
+  } catch (e) {
+    message.error(`打开数据目录失败: ${e}`)
+  }
 }
 </script>
 

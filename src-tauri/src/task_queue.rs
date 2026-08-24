@@ -221,43 +221,58 @@ impl TaskQueue {
         }
     }
 
+    /// 查询任务归属插件(不存在返回 None)。供 bridge 层校验 task_id 归属(G-4)。
+    pub async fn owner_of(task_id: &str) -> Option<String> {
+        let queue = TASK_QUEUE.lock().await;
+        queue.tasks.get(task_id).map(|t| t.plugin_id.clone())
+    }
+
     /// Cancel a task: mark Cancelled AND request the running subprocess be killed
     /// via the global task registry (fixes cancel that only changed status).
+    /// 仅活跃任务(pending/running/paused)可取消;终态任务忽略,避免非法状态迁移。
     pub async fn cancel(task_id: &str) {
         // 通知 ToolRunner 杀子进程(若该任务正在运行)
         let _ = crate::task_registry::request_cancel(task_id).await;
 
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
-            task.status = TaskStatus::Cancelled;
-            task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-            queue.save().unwrap_or(());
+            if matches!(task.status, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused) {
+                task.status = TaskStatus::Cancelled;
+                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                queue.save().unwrap_or(());
+            }
         }
     }
 
     /// Pause a task: 请求暂停子进程(SIGSTOP/挂起)+ 标记状态 Paused。
     /// 真实暂停,不是只改状态——ToolRunner 收到 pause 标志后暂停整个任务树。
+    /// 仅 pending/running 可暂停(已暂停幂等跳过)。
     pub async fn pause(task_id: &str) {
         // 通知 ToolRunner 暂停子进程(若该任务正在运行/排队)
         let _ = crate::task_registry::request_pause(task_id).await;
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
-            task.status = TaskStatus::Paused;
-            queue.save().unwrap_or(());
+            if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+                task.status = TaskStatus::Paused;
+                queue.save().unwrap_or(());
+            }
         }
     }
 
     /// Resume a paused task: 请求恢复子进程(SIGCONT)+ 标记状态 Running。
+    /// 仅 paused 可恢复。
     pub async fn resume(task_id: &str) {
         let _ = crate::task_registry::request_resume(task_id).await;
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
-            task.status = TaskStatus::Running;
-            task.completed_at = None;
-            if task.started_at.is_none() {
-                task.started_at = Some(chrono::Utc::now().to_rfc3339());
+            if task.status == TaskStatus::Paused {
+                task.status = TaskStatus::Running;
+                task.completed_at = None;
+                if task.started_at.is_none() {
+                    task.started_at = Some(chrono::Utc::now().to_rfc3339());
+                }
+                queue.save().unwrap_or(());
             }
-            queue.save().unwrap_or(());
         }
     }
 

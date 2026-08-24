@@ -84,6 +84,12 @@ function onPointerDown(id: string, e: MouseEvent) {
   el.classList.add('drag-moving')  // transition none,transform 由 JS 全权控制
   document.addEventListener('mousemove', onPointerMove)
   document.addEventListener('mouseup', onPointerUp)
+  // 兜底:鼠标拖出窗口/应用失焦时结束拖拽,避免 dragging 状态与 transform 残留
+  window.addEventListener('blur', onWindowBlur)
+}
+
+function onWindowBlur() {
+  if (dragging) onPointerUp()
 }
 
 function onPointerMove(e: MouseEvent) {
@@ -135,6 +141,7 @@ function onPointerUp() {
   if (!dragging) return
   document.removeEventListener('mousemove', onPointerMove)
   document.removeEventListener('mouseup', onPointerUp)
+  window.removeEventListener('blur', onWindowBlur)
   const el = dragId ? itemEl(dragId) : null
   if (el) {
     el.classList.remove('drag-moving')

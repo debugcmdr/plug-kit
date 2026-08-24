@@ -31,6 +31,8 @@ for id in download convert playlist; do
   mkdir -p "$tmpdir/tool"
   cp "plugins/$id/manifest.json" "$tmpdir/manifest.json"
   cp -R "plugins/$id/tool/." "$tmpdir/tool/"
+  # 公共共享模块(方案 B):plugins/shared/_*.py 复制进每个插件 tool/(单点源码,自动分发)
+  cp plugins/shared/*.py "$tmpdir/tool/" 2>/dev/null || true
   # 排除 Python 缓存,保证 zip 确定性(sha256 可复现,不受本地 pyc 影响)
   rm -rf "$tmpdir/tool/__pycache__"
   # 确保可执行
@@ -43,7 +45,8 @@ for id in download convert playlist; do
 
   # 计算 sha256
   SHA=$(shasum -a 256 "$OUT_DIR/$id-$VER.zip" | awk '{print $1}')
-  SIZE=$(stat -f%z "$OUT_DIR/$id-$VER.zip")
+  # 跨平台取文件大小(Linux `stat -c%s` / BSD `stat -f%z`)
+  SIZE=$(stat -c%s "$OUT_DIR/$id-$VER.zip" 2>/dev/null || stat -f%z "$OUT_DIR/$id-$VER.zip")
   echo "  $id-$VER.zip: ${SIZE} bytes, sha256=$SHA"
 
   # 若存在签名私钥,生成 Ed25519 签名写入清单(signature 字段)
@@ -77,8 +80,13 @@ for path in paths:
                 p['category'] = local_manifest['category']
             if local_manifest.get('tags'):
                 p['tags'] = local_manifest['tags']
-            # 插件 zip 放在主仓库 release 资产,按平台命名(当前仅打包当前平台)
-            p['binaryUrl'] = f"https://github.com/{repo}/releases/download/{tag}/{id_}-{ver}.zip"
+            # 插件 zip 放在主仓库 release 资产,按平台命名(当前仅打包当前平台)。
+            # tag 为空(开发期未发布)时指向 latest——URL 格式合法,资产不存在
+            # 时市场安装失败属预期(旧版会拼出 `releases/download//` 双斜杠坏 URL)。
+            if tag:
+                p['binaryUrl'] = f"https://github.com/{repo}/releases/download/{tag}/{id_}-{ver}.zip"
+            else:
+                p['binaryUrl'] = f"https://github.com/{repo}/releases/latest/download/{id_}-{ver}.zip"
             p['releaseUrl'] = f"https://github.com/{repo}/releases/latest"
             p['homepage'] = f"https://github.com/{repo}"
             if sig:

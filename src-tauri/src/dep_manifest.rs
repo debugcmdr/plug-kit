@@ -119,16 +119,24 @@ fn ffprobe_spec_for_platform() -> DepSpec {
 }
 
 /// 该依赖是否已在系统 PATH 可用(此时无需下载)。
+/// 跨平台探测:Unix 用 `sh -c "command -v"`,Windows 用 `where`。
+/// (原实现一律用 sh——Windows 无 sh 恒返回 false,系统 PATH 已装的
+/// ffmpeg/yt-dlp 被判定不可用,触发无谓下载。)
 pub fn dep_available_on_path(name: &str) -> bool {
     let exe = if cfg!(target_os = "windows") {
         format!("{}.exe", name)
     } else {
         name.to_string()
     };
-    // 用 system `which` 探测 PATH，与 dep_manifest 工具目录无关
-    let output = std::process::Command::new("sh")
-        .args(["-c", &format!("command -v {} 2>/dev/null", exe)])
-        .output();
+    let output = if cfg!(target_os = "windows") {
+        std::process::Command::new("where")
+            .arg(&exe)
+            .output()
+    } else {
+        std::process::Command::new("sh")
+            .args(["-c", &format!("command -v {} 2>/dev/null", exe)])
+            .output()
+    };
     matches!(output, Ok(o) if o.status.success() && !o.stdout.is_empty())
 }
 

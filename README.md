@@ -22,7 +22,7 @@
 |------|------|------|
 | [download](https://github.com/debugcmdr/plug-kit) | 视频/音频/图片/字幕下载(播放列表、cookies 登录态、CSV/Excel/txt 批量导入链接) | yt-dlp |
 | [playlist](https://github.com/debugcmdr/plug-kit) | 播放列表/合集批量下载(多列表卡片、逐集勾选、导出纯链接或全量信息 CSV) | yt-dlp |
-| [convert](https://github.com/debugcmdr/plug-kit) | 视频/图片格式转换(预设 + 清晰度/压缩参数) | ffmpeg |
+| [convert](https://github.com/debugcmdr/plug-kit) | 视频/音频/图片格式互转(含视频提取音频、H.264/H.265、WebP/AVIF 等现代格式) | ffmpeg |
 
 ## 📦 安装
 
@@ -87,6 +87,20 @@ git push origin main
 ```
 
 > 注意:GitHub Raw CDN 缓存最长 5 分钟,发布后稍等片刻再验证市场拉取。
+
+### 发布前检查清单(执行 release 前人工确认;脚本门禁见下)
+
+`./scripts/release.sh` 会自动执行三道门禁,不通过即中止:
+
+- **门禁 1 — 依赖 sha256 固化**:ffmpeg/ffprobe 各平台(linux-x64 / macos-x64 / win32-x64)必须在 `src-tauri/src/dep_manifest.rs` 固化 sha256(未固化 = 用户端无完整性校验下载并执行)。当前仅 darwin-arm64 已固化,发布前在对应平台下载资产运行 `shasum -a 256 <file>` 补全(见审查报告 G-8)。
+- **门禁 2 — 清单一致性**:自动执行 `verify-manifests.sh`(双清单一致 / zip sha256 / binaryUrl 格式 / 共享模块与源码一致)。
+- **门禁 3 — 签名状态**:已配置 `OFFICIAL_PUBLIC_KEY` → 强制所有插件包已签名,未签名拒绝发布;未配置 → 警告提醒(签名是可选项,不阻断)。
+
+发布前仍需人工确认:
+
+- [ ] **Windows 真机验证**:PATH 探测(where)、taskkill 进程树、路径分隔符、cookies 盘符识别——跨平台修复未在 Windows 实机回归过
+- [ ] **发布演练**:打正式 tag 后用市场安装真实链路验证(download/convert/playlist 三插件 + 依赖下载),含 macOS 与 Windows 双平台
+- [ ] **签名机制**(若启用):`OFFICIAL_PUBLIC_KEY` 已配置、私钥已备份、未签名插件拒绝安装符合预期(启用步骤:`./scripts/gen-sign-key.sh` 生成密钥 → 公钥填入 `security.rs` → 重新打包自动签名)
 
 ### 插件签名(可选但推荐)
 

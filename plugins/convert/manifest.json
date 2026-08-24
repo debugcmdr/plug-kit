@@ -1,7 +1,7 @@
 {
   "id": "convert",
   "name": "格式转换",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "视频 / 音频 / 图片格式转换(基于 ffmpeg)",
   "author": "plug-kit",
   "category": "media",
@@ -23,7 +23,7 @@
       "output": "json"
     },
     "convert": {
-      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--quality", "{quality}", "--audio-bitrate", "{audio_bitrate}"],
+      "stdinArgs": ["convert", "--input", "{input}", "--output", "{output}", "--quality", "{quality}", "--audio-bitrate", "{audio_bitrate}", "--codec", "{codec}"],
       "output": "progress+json"
     }
   },

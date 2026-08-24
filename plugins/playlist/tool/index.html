@@ -127,6 +127,22 @@
       const head = (i > 0 ? s.slice(0, i) : s).trim();
       return head.length > 90 ? head.slice(0, 90) + '…' : head;
     }
+
+    // 页面内浮动提示:沙盒 iframe 无 allow-modals,alert/confirm 会被浏览器静默阻断,
+    // 统一改用 toast 保证用户可见(替代原 alert/confirm 调用)。
+    let toastEl = null
+    function toast(msg, isErr) {
+      if (!toastEl) {
+        toastEl = document.createElement('div')
+        toastEl.style.cssText = 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:999;max-width:80%;padding:10px 18px;border-radius:9px;font-size:13px;line-height:1.5;color:#fff;background:rgba(29,33,41,.92);box-shadow:0 6px 20px rgba(0,0,0,.18);transition:opacity .25s;opacity:0;pointer-events:none;word-break:break-all;'
+        document.body.appendChild(toastEl)
+      }
+      toastEl.textContent = msg
+      toastEl.style.background = isErr ? 'rgba(213,73,65,.94)' : 'rgba(29,33,41,.92)'
+      toastEl.style.opacity = '1'
+      clearTimeout(toastEl._t)
+      toastEl._t = setTimeout(() => { toastEl.style.opacity = '0' }, 3600)
+    }
     function fmtViews(v) {
       if (!v) return '';
       if (v >= 10000) return (v / 10000).toFixed(1) + '万';
@@ -174,7 +190,7 @@
       const el = $('cookiesStatus');
       if (!cookiesSetting) {
         el.textContent = '未启用'; el.className = 'cookies-status off';
-      } else if (cookiesSetting.startsWith('/') || cookiesSetting.startsWith('\\')) {
+      } else if (cookiesSetting.startsWith('/') || cookiesSetting.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(cookiesSetting)) {
         el.textContent = '文件: ' + cookiesSetting.split('/').pop().split('\\').pop();
         el.title = cookiesSetting; el.className = 'cookies-status';
       } else {
@@ -205,10 +221,11 @@
         appendCard(info);
       } catch (e) {
         const msg = ((e && e.message) || e || '提取失败');
-        alert('提取失败: ' + msg);
-        // macOS cookies 权限错误(Safari 沙盒):提供一键直达「完全磁盘访问」面板
-        if (String(msg).indexOf('完全磁盘访问') >= 0 && window.MT && MT.system &&
-            confirm('需要在系统设置中为 PlugKit 开启「完全磁盘访问权限」才能读取该浏览器 cookies。是否现在打开设置面板?')) {
+        toast('提取失败: ' + brief(String(msg)), true);
+        // macOS cookies 权限错误(Safari 沙盒):直接打开「完全磁盘访问」面板
+        // (用户已触发该错误即表达授权意图,不再用 confirm 二次确认——confirm 在
+        // 沙盒 iframe 中同样会被静默阻断)。
+        if (String(msg).indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
           MT.system.openPermissionSettings().catch(() => {});
         }
       } finally {
@@ -338,7 +355,7 @@
     async function doDownload(card) {
       if (!card || card.busy) return;
       const range = itemsToRange(card.items);
-      if (!range) { alert('请先勾选要下载的集'); return; }
+      if (!range) { toast('请先勾选要下载的集', true); return; }
       card.busy = true;
       const btn = card.els.btnDownload;
       const bar = card.els.bar;
@@ -423,11 +440,11 @@
         });
         if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         const label = r.format === 'links' ? '链接清单' : '全量信息 CSV';
-        alert(`已导出${label} (${r.format.toUpperCase()}):\n${r.file}\n\n共 ${r.count} 条` +
+        toast(`已导出${label} (${r.format.toUpperCase()}):\n${r.file}\n\n共 ${r.count} 条` +
           (r.format === 'csv' ? '\n\n提示:全量信息为逐集提取,耗时较长属正常;缺字段的平台对应列会留空。' : ''));
         try { await MT.openPath(r.output_dir); } catch (e2) { /* 静默 */ }
       } catch (e) {
-        alert('导出失败: ' + ((e && e.message) || e));
+        toast('导出失败: ' + brief((e && e.message) || e), true);
       } finally {
         btn.disabled = false;
         btn.textContent = '导出清单';

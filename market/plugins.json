@@ -24,9 +24,9 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 19108,
-      "sha256": "87d9e92cb50411a96fbdc7fbf8683d4ff82ec7873cf4bbe736d3501447bb48b8",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//download-0.3.0.zip",
+      "size": 21834,
+      "sha256": "8df0dd9df1f0ca5bac12b1312ed20a3e46c5bee8b1e1232e0d802ddb1238790a",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/download-0.3.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     },
@@ -34,7 +34,7 @@
       "id": "convert",
       "name": "格式转换",
       "description": "视频 / 音频 / 图片格式转换(基于 ffmpeg)",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": "plug-kit",
       "category": "media",
       "tags": [
@@ -50,9 +50,9 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 11293,
-      "sha256": "7bbd5a031ce15924065764084d3ceeac1690a7a415be349ed5847c452487403d",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//convert-0.2.0.zip",
+      "size": 18170,
+      "sha256": "c5e880a574a7b7cede0124dd6e0368adb83919bffc3f9d35121ee22856ac1b32",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/convert-0.3.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     },
@@ -77,9 +77,9 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 15789,
-      "sha256": "6c5cdfbcf30452c68742eec18d85caf90d50057093247947ee4c0483b34a0ad3",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/download//playlist-0.2.0.zip",
+      "size": 18893,
+      "sha256": "d9aa20497601ac17b5b57e857ef5e0b81ca7581bc825f61262dcf8c7cd80e22a",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/playlist-0.2.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     }

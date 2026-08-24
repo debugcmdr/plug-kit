@@ -188,6 +188,9 @@ pub struct InstallResult {
     /// MIN_APP_VERSION / UNSIGNED_PLUGIN / INSTALL_OK 等。
     #[serde(default)]
     pub code: Option<String>,
+    /// 安装警告(插件已装但共享依赖缺失/回退等,用户可见,非致命)。
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[tauri::command]
@@ -369,6 +372,23 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
     Ok(all_lines)
 }
 
+/// 清理依赖缓存(~/.plugkit/cache/deps)中残留的 download.tmp(中断下载)。
+/// download.tmp 不可能是合法文件:下载完成即 rename 为最终名;启动时无活跃
+/// 下载进程,直接全删,防止中断残留持续占用磁盘。
+fn cleanup_stale_download_tmp() {
+    let Some(cache_deps) = dirs::home_dir().map(|d| d.join(".plugkit/cache/deps")) else {
+        return;
+    };
+    if !cache_deps.is_dir() {
+        return;
+    }
+    for entry in walkdir::WalkDir::new(&cache_deps).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_name() == "download.tmp" {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 pub fn run() {
     env_logger::init();
     let builder = tauri::Builder::default()
@@ -380,6 +400,20 @@ pub fn run() {
             // 上次运行遗留的非终态任务标记为 interrupted(子进程已随退出消失)
             tauri::async_runtime::spawn(async move {
                 task_queue::TaskQueue::recover().await;
+                // 清理崩溃残留的工作/安装临时目录(启动时无运行中任务,删除安全):
+                // ~/.plugkit/tmp(插件安装临时目录)与 ~/.plugkit/work(任务工作目录)
+                for sub in ["tmp", "work"] {
+                    if let Some(dir) = dirs::home_dir().map(|d| d.join(".plugkit").join(sub)) {
+                        if let Ok(rd) = std::fs::read_dir(&dir) {
+                            for e in rd.flatten() {
+                                let _ = std::fs::remove_dir_all(e.path());
+                            }
+                        }
+                    }
+                }
+                // 清理依赖缓存中中断下载残留的 download.tmp(该文件不可能是合法文件:
+                // 下载完成即 rename 走;启动时无活跃下载,直接全删,防磁盘占用)
+                cleanup_stale_download_tmp();
             });
             Ok(())
         })

@@ -64,7 +64,7 @@
 <body>
   <div class="card">
     <h2>格式转换</h2>
-    <div class="sub">视频 / 音频 / 图片格式互转,支持多文件批量。</div>
+    <div class="sub">视频 / 音频 / 图片格式互转,视频可提取音频,支持多文件批量。</div>
 
     <div class="cats" id="cats">
       <div class="cat active" data-cat="video">视频</div>
@@ -127,46 +127,55 @@
     // 取路径最后一段(兼容 Windows 反斜杠)
     function basename(p) { return p.replace(/\\/g, '/').split('/').pop() || p; }
 
-    // 输出格式(常用排前面)
+    // 输出格式(常用排前面)。codec 可选:mp4/mkv 的 H.265 用 data-codec=hevc 区分,
+    // value 始终是真实扩展名(输出路径拼接直接可用)。
     const FORMATS = {
       video: [
-        { v: 'mp4', label: 'MP4 (H.264) · 最通用' },
-        { v: 'mov', label: 'MOV (QuickTime)' },
-        { v: 'mkv', label: 'MKV (Matroska)' },
-        { v: 'webm', label: 'WebM (VP9)' },
-        { v: 'avi', label: 'AVI' },
-        { v: 'gif', label: 'GIF (动图)' },
-        { v: 'm4v', label: 'M4V' },
-        { v: 'ts', label: 'TS' },
-        { v: 'mpg', label: 'MPG (MPEG-1)' },
-        { v: 'flv', label: 'FLV' },
+        { v: 'mp4', label: 'mp4（H.264）· 最通用' },
+        { v: 'mp4', label: 'mp4（H.265）· 小体积', codec: 'hevc' },
+        { v: 'mkv', label: 'mkv（Matroska）' },
+        { v: 'mkv', label: 'mkv（H.265）', codec: 'hevc' },
+        { v: 'mov', label: 'mov（QuickTime）' },
+        { v: 'webm', label: 'webm（VP9）' },
+        { v: 'avi', label: 'avi（旧兼容）' },
+        { v: 'gif', label: 'gif（动图）' },
+        { v: 'm4v', label: 'm4v（Apple）' },
+        { v: 'ts', label: 'ts（流媒体）' },
+        { v: 'mpg', label: 'mpg（MPEG-1）' },
+        { v: 'flv', label: 'flv（Flash）' },
+        // 视频提取音频:CLI 按输出扩展名分发,天然支持
+        { v: 'mp3', label: 'mp3（提取音频）' },
+        { v: 'm4a', label: 'm4a（提取音频）' },
+        { v: 'wav', label: 'wav（提取音频）' },
       ],
       audio: [
-        { v: 'mp3', label: 'MP3 · 最通用' },
-        { v: 'm4a', label: 'M4A (AAC)' },
-        { v: 'wav', label: 'WAV (无损)' },
-        { v: 'flac', label: 'FLAC (无损)' },
-        { v: 'aac', label: 'AAC' },
-        { v: 'ogg', label: 'OGG (Vorbis)' },
-        { v: 'opus', label: 'Opus' },
-        { v: 'wma', label: 'WMA' },
-        { v: 'aiff', label: 'AIFF' },
+        { v: 'mp3', label: 'mp3（最通用）' },
+        { v: 'm4a', label: 'm4a（AAC 封装）' },
+        { v: 'aac', label: 'aac（裸 AAC 流）' },
+        { v: 'wav', label: 'wav（无损 PCM）' },
+        { v: 'flac', label: 'flac（无损压缩）' },
+        { v: 'ogg', label: 'ogg（Vorbis 开源）' },
+        { v: 'opus', label: 'opus（低延迟高效）' },
+        { v: 'wma', label: 'wma（Windows 生态）' },
+        { v: 'aiff', label: 'aiff（Apple 无损）' },
       ],
       image: [
-        { v: 'jpg', label: 'JPG · 最通用' },
-        { v: 'png', label: 'PNG (无损)' },
-        { v: 'webp', label: 'WebP' },
-        { v: 'gif', label: 'GIF' },
-        { v: 'heic', label: 'HEIC' },
-        { v: 'bmp', label: 'BMP' },
-        { v: 'tiff', label: 'TIFF' },
+        { v: 'jpg', label: 'jpg（最通用）' },
+        { v: 'png', label: 'png（无损）' },
+        { v: 'webp', label: 'webp（现代高效）' },
+        { v: 'avif', label: 'avif（现代高效）' },
+        { v: 'gif', label: 'gif（动图）' },
+        { v: 'heic', label: 'heic（iPhone 高效）' },
+        { v: 'bmp', label: 'bmp（无压缩）' },
+        { v: 'tiff', label: 'tiff（印刷存档）' },
       ],
     };
-    // 每类可选输入扩展名(文件选择对话框过滤)
+    // 每类可选输入扩展名(文件选择对话框过滤)。
+    // svg 不在其中——ffmpeg 官方构建无 SVG 解码器,放了必失败。
     const INPUT_EXTS = {
-      video: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'ts', 'ogv', '3gp', 'flv', 'wmv', 'mpg', 'mpeg', 'rmvb'],
-      audio: ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'aac', 'wma', 'aiff', 'opus', 'ape', 'amr'],
-      image: ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'bmp', 'gif', 'tiff', 'svg', 'avif', 'ico'],
+      video: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'ts', 'ogv', '3gp', 'flv', 'wmv', 'mpg', 'mpeg', 'rmvb', 'm2ts', 'mts', 'vob', '3g2'],
+      audio: ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'aac', 'wma', 'aiff', 'opus', 'ape', 'amr', 'm4b', 'mka'],
+      image: ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'bmp', 'gif', 'tiff', 'avif', 'ico', 'psd'],
     };
     const CAT_LABEL = { video: '视频', audio: '音频', image: '图片' };
     let currentCat = 'video';
@@ -224,8 +233,8 @@
         const known = new Set(selectedFiles.map(f => f.path));
         paths.forEach(p => {
           if (!known.has(p)) {
-            const parts = p.split('/');
-            selectedFiles.push({ path: p, name: parts[parts.length - 1], size: 0 });
+            // Windows 路径用反斜杠,统一走 basename 取最后一段
+            selectedFiles.push({ path: p, name: basename(p), size: 0 });
           }
         });
         renderFiles();
@@ -261,10 +270,19 @@
         const opt = document.createElement('option');
         opt.value = f.v;
         opt.textContent = f.label;
+        if (f.codec) opt.dataset.codec = f.codec;
         sel.appendChild(opt);
       });
-      $('optQuality').classList.toggle('hidden', currentCat !== 'image');
+      updateQualityVisibility();
     }
+
+    // 质量选项仅对有损且接入质量参数的格式显示:
+    // jpg(-q:v) / webp(-quality);png 无损、heic/gif/bmp/tiff 未参数化,显示会误导。
+    function updateQualityVisibility() {
+      const fmt = $('format').value;
+      $('optQuality').classList.toggle('hidden', !(currentCat === 'image' && (fmt === 'jpg' || fmt === 'webp')));
+    }
+    $('format').onchange = updateQualityVisibility;
 
     document.querySelectorAll('.cat').forEach(el => {
       el.onclick = () => {
@@ -281,7 +299,9 @@
     // 然后清空已选列表,用户可以立即挑选新的一批再次点击。进度/倒计时在「任务中心」查看。
     function convertAll() {
       if (selectedFiles.length === 0) { setStatus('请先选择文件', true); return; }
-      const fmt = $('format').value;
+      const opt = $('format').selectedOptions[0];
+      const fmt = opt.value;                    // 真实扩展名(mp4/mkv/mp3/...)
+      const codec = opt.dataset.codec || 'h264'; // 可选:H.265 → hevc
       const quality = $('quality').value;
 
       // 抓取本批次并立即清空选择(用户可马上选下一批)
@@ -302,7 +322,7 @@
         const output = saveDir
           ? saveDir + '/' + basename(base) + '.' + fmt
           : base + '.' + fmt;
-        MT.invoke('convert', { input: f.path, output, quality, audio_bitrate: undefined })
+        MT.invoke('convert', { input: f.path, output, quality, audio_bitrate: undefined, codec })
           .then(() => {
             okCount++; done++;
             setStatus(`进度 ${done}/${total} · 成功 ${okCount}${failCount ? ' · 失败 ' + failCount : ''}(可在任务中心查看)`);

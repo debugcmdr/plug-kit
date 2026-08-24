@@ -7,10 +7,21 @@ use std::io::Cursor;
 use zip::ZipArchive;
 
 fn read_zip(id: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    // 动态查找 release/plugins/ 下任意版本的 {id}-*.zip(避免硬编码版本号与当前脱节)
+    let plugin_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap()
-        .join("release/plugins")
-        .join(format!("{}-0.1.0.zip", id));
+        .join("release/plugins");
+    let path = std::fs::read_dir(&plugin_dir).unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().and_then(|n| n.to_str()).map_or(false, |n| {
+                n.starts_with(&format!("{}-", id)) && n.ends_with(".zip")
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!("no packaged {}-*.zip in release/plugins (run ./scripts/package-plugins.sh)", id)
+        });
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
 }
 

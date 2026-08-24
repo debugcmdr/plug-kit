@@ -10,6 +10,11 @@ static MARKET_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .expect("reqwest client build failed")
 });
 
+/// 插件包下载硬上限:100 MB。合法插件 zip < 1 MB,此上限为其 100 倍余量,
+/// 防市场清单异常/被篡改时声明超大 zip 占用内存/磁盘(与依赖下载上限分开:
+/// 依赖可达 1 GiB,插件包极小故上限更紧)。
+const PLUGIN_ZIP_MAX_BYTES: u64 = 100 * 1024 * 1024; // 100 MB
+
 /// Market plugin entry — light metadata used by the store UI.
 /// This is what `plugins.json` (GitHub Raw) contains; the full
 /// runtime manifest lives inside each installed plugin.
@@ -259,11 +264,23 @@ async fn download_single(url: &str, expected_sha256: Option<&str>) -> Result<Vec
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    // 流式累计 + 大小上限(读取中即检查,超限 abort;插件包体积小,全量内存可接受)
+    let mut resp = resp;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > PLUGIN_ZIP_MAX_BYTES {
+            return Err(format!(
+                "插件包超过大小上限({} MB): {}",
+                PLUGIN_ZIP_MAX_BYTES / (1024 * 1024),
+                url
+            ));
+        }
+    }
 
     if let Some(sha) = expected_sha256 {
         crate::security::validate_sha256(&bytes, sha)
             .map_err(|e| e.to_string())?;
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }

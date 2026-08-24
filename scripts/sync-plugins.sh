@@ -14,8 +14,15 @@ sync_one() {
     echo "跳过:$id (仓库无此目录)"
     return
   fi
+  # 公共共享模块目录非插件,跳过(仅当显式指定时)
+  if [ "$id" = "shared" ]; then
+    echo "跳过:shared 为公共模块目录,随各插件同步"
+    return
+  fi
   rm -rf "$DEST/$id"
   cp -R "$ROOT/plugins/$id" "$DEST/"
+  # 公共共享模块(方案 B):shared/_*.py 复制进该插件 tool/(与打包逻辑一致)
+  cp "$ROOT/plugins/shared/"*.py "$DEST/$id/tool/" 2>/dev/null || true
   # 确保可执行
   chmod +x "$DEST/$id/tool"/plugkit-* 2>/dev/null || true
   echo "已同步:$id"

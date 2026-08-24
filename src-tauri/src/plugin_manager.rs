@@ -41,6 +41,7 @@ impl PluginManager {
                             plugin_id, existing.version, m.version
                         ),
                         code: Some("ALREADY_LATEST".into()),
+                        warnings: vec![],
                     });
                 }
             }
@@ -88,6 +89,7 @@ impl PluginManager {
                     plugin_id: plugin_id.to_string(),
                     message: "此插件未签名,已拒绝安装(主程序已配置官方签名公钥)".to_string(),
                     code: Some("UNSIGNED_PLUGIN".into()),
+                    warnings: vec![],
                 });
             }
         }
@@ -119,6 +121,7 @@ impl PluginManager {
                 message: format!("Bridge version incompatible: requires {}, has {}",
                     manifest.bridge_version, current),
                 code: Some("BRIDGE_INCOMPATIBLE".into()),
+                warnings: vec![],
             });
         }
         // 主程序过旧时拒绝安装,提示升级主程序。
@@ -137,6 +140,7 @@ impl PluginManager {
                         env!("CARGO_PKG_VERSION")
                     ),
                     code: Some("MIN_APP_VERSION".into()),
+                    warnings: vec![],
                 });
             }
         }
@@ -167,13 +171,15 @@ impl PluginManager {
         let _ = fs::remove_dir_all(&dest_old);
 
         // 6. Install shared dependencies declared in manifest (ffmpeg/yt-dlp etc.).
-        self.install_dependencies(plugin_id).await;
+        //    依赖安装失败不阻断安装，但警告随 InstallResult 透出（用户可见，而非仅日志）。
+        let warnings = self.install_dependencies(plugin_id).await;
 
         Ok(crate::InstallResult {
             success: true,
             plugin_id: plugin_id.to_string(),
             message: format!("Plugin '{}' installed successfully", plugin_id),
             code: Some("INSTALL_OK".into()),
+            warnings,
         })
     }
 
@@ -185,17 +191,20 @@ impl PluginManager {
                 plugin_id: plugin_id.to_string(),
                 message: format!("Plugin '{}' not found", plugin_id),
                 code: Some("NOT_FOUND".into()),
+                warnings: vec![],
             });
         }
 
-        // 1. 递减共享依赖引用计数：按 plugin_id 扫描 registry 的 refs 递减
+        // 1. 先删插件目录：删除失败立即中止，共享依赖引用保持不变（状态一致）。
+        //    (原实现先递减 refcount 再删目录——Windows 上运行中插件的目录删除会失败，
+        //    导致"卸载失败但依赖已被清理"的不一致状态。)
+        fs::remove_dir_all(&plugin_dir)
+            .map_err(|e| format!("Remove plugin: {}", e))?;
+
+        // 2. 递减共享依赖引用计数：按 plugin_id 扫描 registry 的 refs 递减
         //    （与安装时的递增严格对称；依赖仍被其他插件引用时保留）。
         let dc = crate::dependency_cache::DependencyCache::new();
         let _ = dc.decrement_refcount_for_plugin(plugin_id).await;
-
-        // 2. Remove the plugin directory.
-        fs::remove_dir_all(&plugin_dir)
-            .map_err(|e| format!("Remove plugin: {}", e))?;
 
         // 3. Clean up now-orphaned dependencies (refcount == 0).
         let _ = dc.clean_orphans().await;
@@ -205,6 +214,7 @@ impl PluginManager {
             plugin_id: plugin_id.to_string(),
             message: format!("Plugin '{}' uninstalled", plugin_id),
             code: Some("UNINSTALL_OK".into()),
+            warnings: vec![],
         })
     }
 
@@ -218,10 +228,23 @@ impl PluginManager {
                 let plugin_id = entry.file_name().to_string_lossy().to_string();
                 let manifest_path = entry.path().join("manifest.json");
                 
+                // 单个插件 manifest 损坏不应拖垮整个列表：跳过 + 记录日志。
+                // (原实现 `?` 传播会让侧边栏/市场面板整体加载失败。)
                 if manifest_path.exists() {
-                    let content = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-                    let manifest: Manifest = serde_json::from_str(&content)
-                        .map_err(|e| e.to_string())?;
+                    let content = match fs::read_to_string(&manifest_path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::warn!("List plugin '{}': read manifest failed ({})", plugin_id, e);
+                            continue;
+                        }
+                    };
+                    let manifest: Manifest = match serde_json::from_str(&content) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            log::warn!("List plugin '{}': invalid manifest ({}), skipped", plugin_id, e);
+                            continue;
+                        }
+                    };
                     
                     plugins.push(crate::PluginInfo {
                         id: plugin_id,
@@ -339,12 +362,14 @@ impl PluginManager {
     }    /// Install any shared dependencies declared in the plugin manifest.
     /// Shared deps (ffmpeg/yt-dlp) are cached in ~/.plugkit/cache/deps and injected
     /// into the subprocess via PLUGKIT_FFMPEG / PLUGKIT_YTDLP env vars at runtime.
-    async fn install_dependencies(&self, plugin_id: &str) {
+    /// 返回安装警告列表（依赖彻底不可用且无缓存回退时），随 InstallResult 透出。
+    async fn install_dependencies(&self, plugin_id: &str) -> Vec<String> {
+        let mut warnings = Vec::new();
         let Ok(Some(manifest)) = self.get_manifest(plugin_id).await else {
-            return;
+            return warnings;
         };
         let Some(deps) = &manifest.dependencies else {
-            return;
+            return warnings;
         };
         let dc = crate::dependency_cache::DependencyCache::new();
         for (name, _constraint) in deps {
@@ -356,11 +381,17 @@ impl PluginManager {
                         "Install dependency {} for {}: {} (fallback to cached {})",
                         name, plugin_id, e, cached.display()
                     );
+                    warnings.push(format!(
+                        "共享依赖 {} 下载失败，已回退使用缓存版本",
+                        name
+                    ));
                 } else {
                     log::error!("Install dependency {} for {} failed: {}", name, plugin_id, e);
+                    warnings.push(format!("共享依赖 {} 安装失败：{}", name, e));
                 }
             }
         }
+        warnings
     }
 }
 

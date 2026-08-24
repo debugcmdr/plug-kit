@@ -3,9 +3,20 @@
 
 #[test]
 fn packaged_zip_has_correct_structure() {
-    let manifest_zip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .join("release/plugins/download-0.1.0.zip");
+    // 动态查找 release/plugins/ 下任意版本的 download-*.zip(避免硬编码版本号
+    // 与当前插件版本脱节——曾锚定 0.1.0 而实际已 0.3.0)
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap();
+    let plugin_dir = manifest_dir.join("release/plugins");
+    let manifest_zip = std::fs::read_dir(&plugin_dir).unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().and_then(|n| n.to_str()).map_or(false, |n| {
+                n.starts_with("download-") && n.ends_with(".zip")
+            })
+        })
+        .expect("packaged download zip should exist (run ./scripts/package-plugins.sh)");
 
     let bytes = std::fs::read(&manifest_zip).expect("packaged zip should exist");
     let cursor = std::io::Cursor::new(bytes);
