@@ -27,6 +27,7 @@ pub mod api {
 }
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter; // window.emit(拖放事件转发)需要 Emitter trait 在作用域
 
 /// 模块级单例：PluginManager 持有插件安装/卸载/列表状态，避免每个命令重建实例。
 static PLUGIN_MANAGER: once_cell::sync::Lazy<plugin_manager::PluginManager> =
@@ -91,6 +92,16 @@ pub async fn dialog_open_folder_inner(
     use tauri_plugin_dialog::DialogExt;
     let picked = app.dialog().file().blocking_pick_folder();
     Ok(picked.map(|p| p.to_string()))
+}
+
+/// 读取文件大小(字节)。插件 UI 展示已选文件体积用;目录/无效路径报错。
+#[tauri::command]
+async fn stat_file(path: String) -> Result<serde_json::Value, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取文件信息失败: {e}"))?;
+    if !meta.is_file() {
+        return Err("不是文件".to_string());
+    }
+    Ok(serde_json::json!({ "size": meta.len() }))
 }
 
 /// 在系统文件管理器中打开指定路径(文件夹或文件的所在目录)。
@@ -394,6 +405,18 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // 系统文件拖入窗口:把路径事件转发给前端(plugkit:files-dropped),
+            // 由前端按「当前激活插件」分发到对应 iframe(插件侧过滤扩展名)。
+            if let tauri::WindowEvent::DragDrop(dd) = event {
+                if let tauri::DragDropEvent::Drop { paths, .. } = dd {
+                    let paths: Vec<String> = paths.iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    let _ = window.emit("plugkit:files-dropped", serde_json::json!({ "paths": paths }));
+                }
+            }
+        })
         .setup(|app| {
             // 启动时预装默认工具(尚未安装时)
             preinstall::ensure_preinstalled(app.handle());
@@ -441,6 +464,7 @@ pub fn run() {
             log_info,
             log_error,
             log_read,
+            stat_file,
         ]);
     protocol::register_protocol(builder)
         .build(tauri::generate_context!())

@@ -49,8 +49,10 @@ def probe_duration(path):
         return 0
 
 
-def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
-    """执行 ffmpeg,流式解析 time=/speed= 进度,并估算剩余时间(ETA)。
+def run_ffmpeg(cmd, duration, label, file_name=None, output_path=None):
+    """执行 ffmpeg,流式解析 time=/speed= 进度并估算 ETA。
+    返回 (ok, err_detail, code):失败时 err_detail 为 stderr 尾部、code 为退出码,
+    供「copy 失败降级转码」等重试场景复用,避免首次失败就输出错误。
     file_name/output_path 随进度上报,任务中心据此展示转换文件名与"打开输出文件夹"入口。"""
     try:
         proc = subprocess.Popen(
@@ -58,8 +60,7 @@ def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
             text=True, bufsize=1,
         )
     except FileNotFoundError:
-        error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
-        return None
+        return False, "FFMPEG_MISSING", None
 
     last_pct = -1.0
     last_report = time.time()
@@ -89,12 +90,22 @@ def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
 
     proc.wait()
     if proc.returncode != 0:
-        err = "".join(tail).strip()[-400:]
+        return False, "".join(tail).strip()[-400:], proc.returncode
+    return True, "", 0
+
+
+def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
+    """执行 ffmpeg 并上报进度;失败时输出 FFMPEG_ERROR/FFMPEG_MISSING。"""
+    ok, err, code = run_ffmpeg(cmd, duration, label, file_name, output_path)
+    if not ok:
+        if err == "FFMPEG_MISSING":
+            error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
+            return None
         msg = "ffmpeg 转换失败。请检查输入文件是否损坏、所选格式是否支持、磁盘空间是否充足。"
         if err:
-            msg += f" ｜ 详情: {err} (ffmpeg 退出码 {proc.returncode})"
+            msg += f" ｜ 详情: {err} (ffmpeg 退出码 {code})"
         else:
-            msg += f" (ffmpeg 退出码 {proc.returncode})"
+            msg += f" (ffmpeg 退出码 {code})"
         error("FFMPEG_ERROR", msg)
         return None
     return True
@@ -157,7 +168,8 @@ def cleanup_if_empty(path):
 
 
 # ---------------------------------------------------------------- 视频转换
-def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None, codec=None):
+def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitrate=None, codec=None, gif_fps=None, gif_width=None):
+    """转换视频。提取音频是独立操作:UI 输出音频扩展名(如 .mp3)时由 main() 分发到 convert_audio。"""
     output_path = resolve_output(input_path, output_path)
     ensure_output_dir(output_path)
     duration = probe_duration(input_path)
@@ -168,15 +180,20 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
     ext = os.path.splitext(output_path)[1].lower()
     preset_map = {"fast": "veryfast", "medium": "medium", "slow": "slow"}
 
-    # 视频转 GIF
+    # 视频转 GIF(参数化:fps/宽度可调;scale 用 -2 保偶数,高度奇数会报错)
     if ext == ".gif":
+        fps = gif_fps or "10"
+        width = gif_width or "480"
         cmd = [FFMPEG, "-y", "-i", input_path,
-               "-vf", "fps=10,scale=480:-1:flags=lanczos", "-loop", "0"]
+               "-vf", f"fps={fps},scale={width}:-2:flags=lanczos", "-loop", "0"]
         cmd.append(output_path)
     elif ext == ".webm":
-        if not has_encoder("libvpx-vp9"):
+        # 双编码器防护:视频 vp9 + 音频 opus 任一缺失都应明确提示(而非 ffmpeg 裸报错)
+        missing = [enc for enc in ("libvpx-vp9", "libopus") if not has_encoder(enc)]
+        if missing:
             cleanup_if_empty(output_path)
-            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libvpx-vp9 编码器,无法转 WebM。可用: mp4/mkv/mov")
+            error("ENCODER_MISSING",
+                  f"当前 ffmpeg 缺少 {', '.join(missing)} 编码器,无法转 WebM。可用: mp4/mkv/mov")
             return
         cmd = [FFMPEG, "-y", "-i", input_path,
                "-c:v", "libvpx-vp9", "-preset", preset_map.get(preset, "medium"),
@@ -211,17 +228,41 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
             cmd += ["-c:v", "libx265", "-preset", preset_map.get(preset, "medium"),
                     "-crf", crf or "23", "-c:a", "aac", "-b:a", audio_bitrate or "128k"]
         elif ext in (".avi", ".mpg", ".mpeg", ".flv"):
-            cmd += ["-c:v", "libx264", "-crf", crf or "23", "-c:a", "aac"]
+            cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
+                    "-crf", crf or "23", "-c:a", "aac"]
         elif ext in (".ts", ".m4v"):
+            # copy 优先:快速无损封装。源编码与容器不兼容(如 vp9→m4v)时
+            # ffmpeg 报错,降级转码 libx264 重试(避免"选了就必失败")。
             cmd += ["-c:v", "copy", "-c:a", "aac"]
         else:
             cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
                     "-crf", crf or "23", "-c:a", "aac"]
         cmd.append(output_path)
 
-    ok = run_with_progress(cmd, duration, "转换中", file_name=fname, output_path=output_path)
-    if ok is None:
-        return
+    # 保留源元数据(标题/日期等)。位置必须在输出文件参数之前,统一在各分支末尾注入。
+    cmd[-1:-1] = ["-map_metadata", "0"]
+
+    if ext in (".ts", ".m4v"):
+        # copy 失败(容器不兼容源编码)→ 清理占位,降级转码 libx264 再试。
+        ok, _, _ = run_ffmpeg(cmd, duration, "转换中", file_name=fname, output_path=output_path)
+        if not ok:
+            cleanup_if_empty(output_path)
+            cmd = [FFMPEG, "-y", "-i", input_path,
+                   "-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
+                   "-crf", crf or "23", "-c:a", "aac", "-map_metadata", "0", output_path]
+            progress(0, message="copy 封装失败,降级转码…")
+            ok, err, code = run_ffmpeg(cmd, duration, "转换中(转码)", file_name=fname, output_path=output_path)
+            if not ok:
+                cleanup_if_empty(output_path)
+                msg = "ffmpeg 转换失败。请检查输入文件是否损坏、所选格式是否支持、磁盘空间是否充足。"
+                if err:
+                    msg += f" ｜ 详情: {err} (ffmpeg 退出码 {code})"
+                error("FFMPEG_ERROR", msg)
+                return
+    else:
+        ok = run_with_progress(cmd, duration, "转换中", file_name=fname, output_path=output_path)
+        if ok is None:
+            return
     progress(100, message="转换完成", file_name=fname, output_path=output_path)
     result({
         "category": "video",
@@ -231,15 +272,14 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
     })
 
 
-# ---------------------------------------------------------------- 音频转换
-def convert_audio(input_path, output_path, audio_bitrate=None):
-    output_path = resolve_output(input_path, output_path)
-    ensure_output_dir(output_path)
-    duration = probe_duration(input_path)
-    fname = os.path.basename(output_path)
-    progress(0, message=f"开始转换音频 {os.path.basename(input_path)}...",
-             file_name=fname, output_path=output_path)
+# ---------------------------------------------------------------- 音频转换 / 提取
+def build_audio_cmd(input_path, output_path, audio_bitrate=None):
+    """构造"提取/转换音频"的 ffmpeg 命令。
 
+    统一走「解码源音轨 → 重编码为目标格式」:源音轨无论内置什么格式
+    (AAC/MP3/Opus/AC3/FLAC/WMA…),ffmpeg 都能解码,因此该命令同时
+    覆盖「音频格式转换」与「从视频提取音频」两个场景。-vn 丢弃视频流。
+    """
     ext = os.path.splitext(output_path)[1].lower()
     codec_map = {
         ".mp3": "libmp3lame", ".m4a": "aac", ".wav": "pcm_s16le",
@@ -257,13 +297,38 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
     if ext in (".mp3", ".m4a"):
         cmd += ["-b:a", audio_bitrate or "192k"]
     elif ext == ".wav":
-        cmd += ["-ar", "44100"]
+        # 不强制 -ar:wav 应保留源采样率(48k/96k 无损输出,降采样违背无损语义)
+        pass
     elif ext == ".ogg":
         # opus 编码器用 -b:a,vorbis 用 -q:a,按实际选中的 codec 给参数
         cmd += ["-b:a", audio_bitrate or "128k"] if codec == "libopus" else ["-q:a", "4"]
     elif ext == ".opus":
         cmd += ["-b:a", audio_bitrate or "128k"]
     cmd.append(output_path)
+    # 保留源元数据(标题/艺术家等);位置须在输出文件参数之前(最后元素前插入)
+    cmd[-1:-1] = ["-map_metadata", "0"]
+    return cmd
+
+
+def convert_audio(input_path, output_path, audio_bitrate=None):
+    output_path = resolve_output(input_path, output_path)
+    ensure_output_dir(output_path)
+    duration = probe_duration(input_path)
+    fname = os.path.basename(output_path)
+    progress(0, message=f"开始转换音频 {os.path.basename(input_path)}...",
+             file_name=fname, output_path=output_path)
+
+    # 外部库编码器缺失防护(与视频/图片分支对称;ogg 的 libvorbis 缺失在
+    # build_audio_cmd 内已回退 libopus,不在此列)
+    ext = os.path.splitext(output_path)[1].lower()
+    need_encoder = {".amr": "libopencore_amrnb", ".wma": "wmav2"}.get(ext)
+    if need_encoder and not has_encoder(need_encoder):
+        cleanup_if_empty(output_path)
+        error("ENCODER_MISSING",
+              f"当前 ffmpeg 缺少 {need_encoder} 编码器,无法转 {ext.lstrip('.')}。可用: mp3/m4a/wav/flac")
+        return
+
+    cmd = build_audio_cmd(input_path, output_path, audio_bitrate)
 
     ok = run_with_progress(cmd, duration, "转换中", file_name=fname, output_path=output_path)
     if ok is None:
@@ -275,6 +340,75 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
         "output": output_path,
         "size": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
     })
+
+
+# ---------------------------------------------------------------- 原样提取(无损复制)
+# 源音轨编码 → 输出扩展名映射(容器需能无损封装该编码)。
+# 「原音频」提取 = ffprobe 探测源音轨 → 选容器 → -c:a copy,零转码零损耗。
+AUDIO_CODEC_EXT = {
+    "aac": "m4a", "alac": "m4a", "mp3": "mp3", "opus": "opus", "flac": "flac",
+    "vorbis": "ogg", "pcm_s16le": "wav", "pcm_s24le": "wav", "pcm_f32le": "wav",
+    "ac3": "ac3", "eac3": "eac3", "wmav2": "wma", "aiff": "aiff",
+}
+
+
+def probe_audio_codec(path):
+    """ffprobe 探测首条音频流的编码器名;无音轨/探测失败返回 None。"""
+    try:
+        proc = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        codec = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+        return codec or None
+    except Exception:
+        return None
+
+
+def extract_audio_copy(input_path, output_path):
+    """原样提取音轨(无损复制):UI 输出路径以 .copy 结尾(占位),这里探测
+    源音轨编码后修正为真实扩展名,`-c:a copy` 快速封装,零转码零损耗。
+    源无音轨 → 明确报错;copy 失败(容器不支持该编码)→ 回退重编码 mp3。"""
+    codec = probe_audio_codec(input_path)
+    if not codec:
+        error("NO_AUDIO_STREAM", "未检测到音轨,无法提取音频。源视频可能没有音频流")
+        return
+
+    base = os.path.splitext(output_path)[0]
+    fmt = AUDIO_CODEC_EXT.get(codec)
+    real_output = _reserve_path(base + "." + fmt)
+    ensure_output_dir(real_output)
+    fname = os.path.basename(real_output)
+    progress(0, message=f"开始提取音频 {os.path.basename(input_path)} (原样 {fmt})...",
+             file_name=fname, output_path=real_output)
+
+    duration = probe_duration(input_path)
+    cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", "copy",
+           "-map_metadata", "0", real_output]
+    ok, err, code = run_ffmpeg(cmd, duration, "提取中", file_name=fname, output_path=real_output)
+    if not ok:
+        # 容器不支持该编码(copy 失败)→ 降级重编码 mp3
+        cleanup_if_empty(real_output)
+        progress(0, message="无损封装失败,降级重编码 mp3…")
+        fallback = _reserve_path(base + ".mp3")
+        cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", "libmp3lame",
+               "-b:a", "192k", "-map_metadata", "0", fallback]
+        ok2, err2, code2 = run_ffmpeg(cmd, duration, "转换中(降级)", file_name=os.path.basename(fallback), output_path=fallback)
+        if not ok2:
+            cleanup_if_empty(fallback)
+            msg = "音频提取失败。请检查源视频音轨是否损坏。"
+            if err2:
+                msg += f" ｜ 详情: {err2} (ffmpeg 退出码 {code2})"
+            error("FFMPEG_ERROR", msg)
+            return
+        progress(100, message="转换完成（已降级为 mp3）", file_name=os.path.basename(fallback), output_path=fallback)
+        result({"category": "audio", "input": input_path, "output": fallback,
+                "size": os.path.getsize(fallback), "fallback": "mp3"})
+        return
+    progress(100, message="转换完成", file_name=fname, output_path=real_output)
+    result({"category": "audio", "input": input_path, "output": real_output,
+            "size": os.path.getsize(real_output), "codec": codec})
 
 
 @lru_cache(maxsize=None)
@@ -363,19 +497,33 @@ def convert_image(input_path, output_path, quality="90"):
 
 # ---------------------------------------------------------------- 探测
 def probe():
-    """探测支持的目标格式列表(与 UI FORMATS 的 value 对齐)。"""
+    """探测依赖与编码器能力(UI 进页面调用,即时执行不进任务中心):
+    has_ffmpeg 供依赖缺失提示;encoders 供 UI 禁用当前构建不可用的格式。
+    ffmpeg 缺失时 has_encoder 内部捕获异常返回 False,has_ffmpeg=False。"""
+    encoders = {}
+    for enc in ("libx264", "libx265", "libvpx-vp9", "libopus", "libmp3lame",
+                "libvorbis", "libwebp", "libsvtav1", "libaom-av1", "wmav2",
+                "libopencore_amrnb", "flac", "aac"):
+        encoders[enc] = has_encoder(enc)
+    try:
+        has_ff = subprocess.run([FFMPEG, "-version"],
+                                capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        has_ff = False
     result({
-        "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif", "m4v", "ts", "mpg", "flv", "mp3", "m4a", "wav"],
+        "has_ffmpeg": has_ff,
+        "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif", "m4v", "ts", "mpg", "flv"],
+        "extractable_audio": ["copy", "mp3", "m4a", "wav"],
         "audio_formats": ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "aiff"],
         "image_formats": ["jpg", "png", "webp", "avif", "gif", "heic", "bmp", "tiff"],
-        "has_ffmpeg": True,
+        "encoders": encoders,
     })
 
 
 def main():
     argv = sys.argv[1:]
     if not argv:
-        result({"usage": "convert <probe|convert> --input FILE --output FILE [--preset fast|medium|slow] [--quality 90] [--audio-bitrate 128k]"})
+        result({"usage": "convert <probe|convert> --input FILE --output FILE [--preset fast|medium|slow] [--quality 90] [--audio-bitrate 128k] [--gif-fps 10] [--gif-width 480]"})
         return
     cmd = argv[0]
     args = parse_args(argv[1:])
@@ -391,17 +539,24 @@ def main():
             if not os.path.exists(inp):
                 error("INPUT_MISSING", f"输入文件不存在: {inp}")
                 return
-            # 按输出扩展名优先决定转换意图(如 .mp3 输出 → 提取音频)
+            # 按输出扩展名优先决定转换意图:
+            # .copy → 原样提取音轨(无损复制);.mp3/.m4a/.wav → 重编码提取;
+            # 音频/图片扩展名 → 对应转换;其余 → 视频转换。
             out_ext = os.path.splitext(args["output"])[1].lower()
-            if out_ext in AUDIO_EXTS:
+            if out_ext == ".copy":
+                extract_audio_copy(inp, args["output"])
+            elif out_ext in AUDIO_EXTS:
                 convert_audio(inp, args["output"], args.get("audio_bitrate"))
             elif out_ext in IMAGE_EXTS:
-                convert_image(inp, args["output"], args.get("quality", "90"))
+                # quality 空串(manifest 占位符未提供)容错回退 90
+                convert_image(inp, args["output"], args.get("quality") or "90")
             else:
-                # 否则按输入类别走视频转换;codec 仅影响 mp4(h264 默认 / hevc)
+                # 否则按输入类别走视频转换;codec 仅影响 mp4(h264 默认 / hevc)。
+                # 提取音频是独立操作:UI 输出 .mp3/.m4a/.wav/.copy 时走上方分支。
                 convert_video(inp, args["output"], args.get("preset", "medium"),
                               args.get("crf"), args.get("audio_bitrate"),
-                              args.get("codec") or "h264")
+                              args.get("codec") or "h264",
+                              args.get("gif_fps") or "10", args.get("gif_width") or "480")
         else:
             error("UNKNOWN_CMD", f"未知命令: {cmd}")
     except Exception as e:

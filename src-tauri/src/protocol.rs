@@ -144,6 +144,10 @@ fn http_response(status: Status, content_type: &str, body: &[u8]) -> http::Respo
     http::Response::builder()
         .status(status as u16)
         .header("Content-Type", content_type)
+        // 插件文件禁用缓存:开发期插件文件频繁变更(热更新),若 WebView 缓存了
+        // plugkit:// 响应,改完插件后 iframe 仍加载旧内容——曾导致"同步了 dev
+        // 副本但界面不变"。bridge.js 为编译期内置,no-store 亦无副作用。
+        .header("Cache-Control", "no-store")
         .body(Cow::Owned(body.to_vec()))
         .unwrap_or_else(|_| http::Response::new(Cow::Owned(Vec::new())))
 }

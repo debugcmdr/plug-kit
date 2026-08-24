@@ -6,6 +6,35 @@
 
 ### 新增
 
+- **convert 插件 v0.6.0**:
+  - 视频模块左右分栏重构(用户驱动):左「格式转换」右「音频提取」两个独立操作,点哪个执行哪个;音频/图片分类保持单栏
+  - **音频提取「原音频(无损复制)」**(默认):ffprobe 探测源音轨编码 → 映射容器 → `-c:a copy` 零转码零损耗;支持 aac/mp3/opus/flac/vorbis/pcm/ac3/eac3/wmav2/alac/aiff;失败降级重编码 mp3
+  - **GIF 参数化**:帧率(5/10/15)与宽度(320/480/720)可调,scale 用 -2 保偶
+  - **probe 即时执行**:进页面探测依赖与编码器能力(不进任务中心),ffmpeg 缺失前置提示、缺失编码器对应格式置灰
+  - **文件拖放添加**:系统拖入文件 → 外壳 → 激活插件(MT.onFilesDropped),按分类扩展名过滤
+  - **文件大小展示**:MT.fs.stat 读取已选文件体积
+- **convert 插件 v0.5.0**:
+  - 视频模块左右分栏雏形:格式转换 + 音频输出独立按钮(本版本由 v0.6.0 文案收敛)
+
+### 修复
+
+- **convert wav 强制降采样 44.1kHz**:无损格式却损失采样率——移除 `-ar`,保留源采样率
+- **convert webm 防护不对称**:只查 libvpx-vp9 不查 libopus——双编码器任一缺失都明确提示
+- **convert ts/m4v `-c:v copy` 必败**:源编码与容器不兼容时 ffmpeg 裸报错——copy 失败自动降级 libx264 转码
+- **convert amr/wma 无编码器提示**:补 libopencore_amrnb/wmav2 has_encoder 检查(与其余分支对称)
+- **元数据丢失**:转换不保留标题/日期等——视频/音频命令统一加 `-map_metadata 0`
+- **convert 依赖缺失反馈滞后**:ffmpeg 缺失要等点转换才报错——probe 前置提示
+- **plugkit:// 协议缓存**:协议响应无 Cache-Control,WebView 缓存插件 HTML 导致「同步了但界面不变」——统一加 `no-store`
+
+### 变更
+
+- **convert 版本 0.3.0 → 0.6.0**,音频提取重编码选项标注「重编码」、原音频为默认
+- **convert avi/mpg/flv 统一补 `-preset medium`**(与其余分支行为一致)
+- **convert CLI 单元测试 12 → 18 例**:原样提取映射/probe 编码器/GIF 参数/元数据/新 UI 结构断言
+- **外壳桥接新增**:`stat_file`(文件大小)、`plugkit:files-dropped` 拖放事件链路、`MT.onFilesDropped`/`MT.fs.stat`(桥接 SDK v1.0.0 兼容追加)
+
+### 新增（convert v0.3.0）
+
 - **convert 插件 v0.3.0**:
   - 视频输出新增「mp4（H.265）」「mkv（H.265）」(libx265,`--codec` 参数,缺编码器明确提示;mp4 带 `hvc1` tag 兼容 Apple)
   - **视频提取音频**:视频类别下可选 mp3/m4a/wav,CLI 按输出扩展名分发零改动
@@ -13,14 +42,14 @@
   - 输入格式扩充:视频 +m2ts/mts/vob/3g2,音频 +m4b/mka,图片 +psd(ffmpeg 内建解码,零依赖风险)
   - 输出选项命名统一为「格式（说明）」,value 即真实扩展名,编码差异用 data-codec 区分
 
-### 修复
+### 修复（convert v0.3.0）
 
 - **convert JPG 质量选项失效**:`-q:v` 值域 1~31(越小越好),UI 传 90/75/60 被 ffmpeg clamp 到最差画质(实测三值输出字节数完全一致)——改为映射 90→q2 / 75→q5 / 60→q8,方向与档位恢复正确
 - **convert 图片输入含 svg**:ffmpeg 官方构建无 SVG 解码器,选了必失败——已从输入白名单移除
 - **convert 并发输出竞态**:批量 + 保存目录 + 同名文件时,check-then-write 的路径去重存在并发窗口,两任务可能写同一输出——改为 `O_CREAT|O_EXCL` 原子占位,并发下各自拿独立路径
 - **convert ogg 输出依赖 libvorbis**:部分构建(含 Homebrew)无 libvorbis 时直接失败——回退 libopus(ogg 容器原生支持;实测 ffmpeg 8.x 原生 vorbis 编码器不可用,不能作为回退)
 
-### 变更
+### 变更（convert v0.3.0）
 
 - **convert 质量选项显隐收敛**:仅 jpg/webp(有损且接入质量参数)显示;png 无损、heic/avif/gif/bmp/tiff 未参数化,不再显示误导
 - **convert 版本 0.2.0 → 0.3.0**,发布包与市场清单已重新打包同步

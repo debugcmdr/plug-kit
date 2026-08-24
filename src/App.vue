@@ -32,6 +32,7 @@ const themeOverrides: GlobalThemeOverrides = {
 
 const activePlugin = ref<string | null>(null)
 let unlistenProgress: UnlistenFn | null = null
+let unlistenDropped: UnlistenFn | null = null
 
 function selectPlugin(target: string) {
   activePlugin.value = target
@@ -52,6 +53,20 @@ onMounted(async () => {
     // 插件可据此过滤归属,否则所有任务进度串台(广播无法区分)。
     iframe?.contentWindow?.postMessage(
       { type: 'plugkit:progress', data: { ...(data || {}), task_id } },
+      '*'
+    )
+  })
+  // 系统文件拖入窗口:外壳 emit plugkit:files-dropped,按「当前激活插件」转发到其
+  // iframe(plugkit:files-dropped 供 bridge.js onFilesDropped 监听)。
+  // 业务过滤(扩展名/分类)由插件侧做,外壳/前端不掺和。
+  unlistenDropped = await listen('plugkit:files-dropped', (event: any) => {
+    const pid = activePlugin.value
+    if (!pid || pid === 'home') return
+    const iframe = document.querySelector(
+      `iframe[data-plugin-id="${pid}"]`
+    ) as HTMLIFrameElement | null
+    iframe?.contentWindow?.postMessage(
+      { type: 'plugkit:files-dropped', paths: event.payload?.paths || [] },
       '*'
     )
   })
@@ -84,6 +99,7 @@ invokeCleanupTimer = setInterval(() => {
 
 onUnmounted(() => {
   unlistenProgress?.()
+  unlistenDropped?.()
   if (invokeCleanupTimer) clearInterval(invokeCleanupTimer)
 })
 

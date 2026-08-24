@@ -93,6 +93,12 @@ async fn invoke_cli(
             command_name, plugin_id
         ));
     }
+    // 探测类命令(如 convert 的 probe):即时执行,不进任务中心。
+    // ToolRunner 的 task_id=None 会生成随机 id 但不注册任务记录——
+    // 插件 UI 进页面探测依赖/编码器可用性用,避免任务中心出现瞬时查询任务。
+    if command_name == "probe" {
+        return crate::TOOL_RUNNER.invoke(plugin_id, command_name, params, Some(app), None).await;
+    }
     let task_id = match payload.get("task_id").and_then(|v| v.as_str()) {
         Some(id) => {
             // 归属校验(G-4):插件传入的 task_id 若已在任务中心登记且不属于当前插件
@@ -240,6 +246,12 @@ async fn dispatch(
         "dialog_open_folder" => {
             let path = crate::dialog_open_folder_inner(app.clone()).await?;
             Ok(serde_json::json!({ "path": path }))
+        }
+        // 读取文件大小(插件 UI 展示已选文件体积)
+        "stat_file" => {
+            let path = payload.get("path").and_then(|v| v.as_str())
+                .ok_or("Missing 'path'")?;
+            crate::stat_file(path.to_string()).await.map_err(|e| e)
         }
         // 在系统文件管理器中打开路径
         "open_in_folder" => {

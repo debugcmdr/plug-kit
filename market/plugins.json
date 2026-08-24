@@ -33,8 +33,8 @@
     {
       "id": "convert",
       "name": "格式转换",
-      "description": "视频 / 音频 / 图片格式转换(基于 ffmpeg)",
-      "version": "0.3.0",
+      "description": "视频 / 音频 / 图片格式转换，视频可提取音频(基于 ffmpeg)",
+      "version": "0.6.0",
       "author": "plug-kit",
       "category": "media",
       "tags": [
@@ -50,9 +50,9 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 18170,
-      "sha256": "c5e880a574a7b7cede0124dd6e0368adb83919bffc3f9d35121ee22856ac1b32",
-      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/convert-0.3.0.zip",
+      "size": 22685,
+      "sha256": "edd7859a3a461cc597cea0e090d523c76b803dbaab199b65dec6274a4910fca9",
+      "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/convert-0.6.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
     },

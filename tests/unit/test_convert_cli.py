@@ -152,12 +152,91 @@ def test_ui_format_values_covered_by_cli():
     video_handled = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".gif", ".m4v", ".ts", ".mpg", ".flv"}
     for f in ui["formats"]["video"]:
         ext = f".{f['v']}"
-        # 视频类别:要么走音频提取(AUDIO_EXTS),要么走视频分支
-        assert ext in AUDIO_EXTS or ext in video_handled, f"video 输出 {f['v']} 无 CLI 分发"
+        # 视频输出格式必须全部由视频转换分支覆盖——音频提取已独立为
+        # 「音频输出」选项卡(optAudioExtract),不允许再混入输出格式(防回归)。
+        assert ext in video_handled, f"video 输出 {f['v']} 无 CLI 视频分发"
     for f in ui["formats"]["audio"]:
         assert f".{f['v']}" in AUDIO_EXTS, f"audio 输出 {f['v']} 无 CLI 分发"
     for f in ui["formats"]["image"]:
         assert f".{f['v']}" in IMAGE_EXTS, f"image 输出 {f['v']} 无 CLI 分发"
+
+
+def test_video_formats_no_audio_extract_entries():
+    """视频输出格式不得混入音频扩展名(提取音频已独立为第二个输出选项卡)。"""
+    ui = parse_ui()
+    for f in ui["formats"]["video"]:
+        assert f".{f['v']}" not in AUDIO_EXTS, f"video 输出选项混入音频格式 {f['v']}"
+
+
+def test_extract_audio_options_aligned_with_cli():
+    """UI「音频提取」下拉取值必须被 CLI 支持:
+    copy=原样无损提取(CLI 识别 .copy 输出,探测源音轨后 -c:a copy);
+    mp3/m4a/wav=重编码(走 AUDIO_EXTS 音频转换)。copy 为默认(第一项)。"""
+    src = open(INDEX_HTML, encoding="utf-8").read()
+    m = re.search(r'id="audioExtract"(.*?)</select>', src, re.S)
+    assert m, "index.html 缺少 audioExtract 下拉框"
+    values = re.findall(r'value="([^"]*)"', m.group(1))
+    assert values == ["copy", "mp3", "m4a", "wav"], f"audioExtract 选项漂移: {values}"
+    for v in values[1:]:
+        assert f".{v}" in AUDIO_EXTS, f"audioExtract 取值 {v} 不在 CLI 音频格式集"
+
+
+def test_extract_audio_copy_mapping():
+    """原样提取的音轨编码→扩展名映射:常见音轨都能映射到可无损封装的容器。"""
+    for codec, ext in (("aac", "m4a"), ("alac", "m4a"), ("mp3", "mp3"), ("opus", "opus"),
+                       ("flac", "flac"), ("vorbis", "ogg"), ("pcm_s16le", "wav"),
+                       ("pcm_s24le", "wav"), ("ac3", "ac3"), ("eac3", "eac3"),
+                       ("wmav2", "wma"), ("aiff", "aiff")):
+        assert cli.AUDIO_CODEC_EXT[codec] == ext, f"映射错误: {codec} → {ext}"
+
+
+def test_probe_reports_encoders():
+    """probe 必须报告 has_ffmpeg + 编码器字典(UI 据此禁用不可用格式)。"""
+    import io
+    import json
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli.probe()
+    data = json.loads(buf.getvalue())
+    assert data["type"] == "result" and data["success"] is True
+    d = data["data"]
+    assert "has_ffmpeg" in d and isinstance(d["has_ffmpeg"], bool)
+    assert "encoders" in d and isinstance(d["encoders"], dict)
+    for enc in ("libx264", "libx265", "libopus", "libwebp", "libvpx-vp9"):
+        assert enc in d["encoders"], f"probe 缺编码器探测: {enc}"
+    assert "copy" in d["extractable_audio"], "原样提取(copy)应列入 extractable_audio"
+
+
+def test_video_split_layout_present():
+    """视频模块左右分栏结构必须存在(左=视频转换,右=音频提取,两个独立按钮);
+    gif 参数/清空/拖放等新增能力元素必须存在。"""
+    src = open(INDEX_HTML, encoding="utf-8").read()
+    for token in ('id="convertSplit"', 'id="formatVideo"', 'id="btnConvertVideo"',
+                  'id="btnExtractAudio"', 'function convertVideos', 'function extractAudios',
+                  'id="gifOpts"', 'id="gifFps"', 'id="gifWidth"', 'id="btnClear"',
+                  'MT.onFilesDropped', "MT.invoke('probe')"):
+        assert token in src, f"index.html 缺少 {token}"
+    # 音频提取输出音频扩展名,由 CLI 按扩展名分发——不再依赖 --extract-audio 参数
+    assert "--extract-audio" not in src, "UI 不应再引用 --extract-audio"
+
+
+def test_build_audio_cmd():
+    """音频提取/转换命令构造:必须 -vn(丢弃视频流)+ 目标 codec + 保留元数据。
+    wav 不再强制 -ar 降采样(保留源采样率,无损语义);-map_metadata 0 在输出前。"""
+    assert cli.build_audio_cmd("in.mp4", "out.mp3") == [
+        cli.FFMPEG, "-y", "-i", "in.mp4", "-vn", "-acodec", "libmp3lame",
+        "-b:a", "192k", "-map_metadata", "0", "out.mp3"]
+    assert cli.build_audio_cmd("in.avi", "out.wav") == [
+        cli.FFMPEG, "-y", "-i", "in.avi", "-vn", "-acodec", "pcm_s16le",
+        "-map_metadata", "0", "out.wav"]
+    assert cli.build_audio_cmd("in.mkv", "out.m4a") == [
+        cli.FFMPEG, "-y", "-i", "in.mkv", "-vn", "-acodec", "aac",
+        "-b:a", "192k", "-map_metadata", "0", "out.m4a"]
+    # 显式码率覆盖默认
+    assert cli.build_audio_cmd("in.mov", "out.mp3", "320k") == [
+        cli.FFMPEG, "-y", "-i", "in.mov", "-vn", "-acodec", "libmp3lame",
+        "-b:a", "320k", "-map_metadata", "0", "out.mp3"]
 
 
 def test_ui_codec_whitelist():

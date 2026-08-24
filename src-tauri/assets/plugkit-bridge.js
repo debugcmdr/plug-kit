@@ -34,6 +34,18 @@
     return function() { window.removeEventListener('message', handler); };
   }
 
+  // 监听外壳转发的系统文件拖放事件(plugkit:files-dropped → 激活插件 iframe)。
+  // 回调收到路径数组,由插件侧按自身业务过滤(如扩展名)。
+  function onFilesDropped(callback) {
+    const handler = (e) => {
+      if (e.data && e.data.type === CHANNEL + ':files-dropped') {
+        callback((e.data && e.data.paths) || []);
+      }
+    };
+    window.addEventListener('message', handler);
+    return function() { window.removeEventListener('message', handler); };
+  }
+
   // 接收主程序回发的 plugkit:response,按 id resolve/reject 对应的 invoke Promise。
   // (修复:原先没有任何地方消费 response,所有 invoke 永远 pending 直到超时)
   window.addEventListener('message', (e) => {
@@ -56,11 +68,16 @@
   const MT = {
     invoke: invoke,
     onProgress: onProgress,
+    onFilesDropped: onFilesDropped,
     config: {
       get: function(key) { return invoke('config_get', { key: key }); },
       set: function(key, value) { return invoke('config_set', { key: key, value: value }); }
       // 注意:SDK 能力与后端 dispatch 一一对应。后端无 config_clear,
       // 未提供 clear()(调用会落入兜底分支被误当作插件命令)。
+    },
+    // 文件系统只读辅助:stat(path) → { size }(展示已选文件体积)。
+    fs: {
+      stat: function(path) { return invoke('stat_file', { path: path }); }
     },
     // 任务控制:取消 / 暂停 / 恢复。
     // 任务本身由 MT.invoke 自动创建(带 URL 去重:活跃任务不重复创建,终态允许重新解析)。
