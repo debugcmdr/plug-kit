@@ -165,6 +165,13 @@
       return head.length > 90 ? head.slice(0, 90) + '…' : head;
     }
 
+    // 浏览器 cookies 权限错误判断:按结构化错误码 [COOKIES_PERMISSION](优先),
+    // 保留文案兜底(兼容旧版主程序/未带码的错误来源)。
+    function isCookiesPermission(msg) {
+      const s = String(msg || '');
+      return s.indexOf('[COOKIES_PERMISSION]') >= 0 || s.indexOf('完全磁盘访问') >= 0;
+    }
+
     // ---- 保存路径 ----
     async function changeDir() {
       try {
@@ -295,16 +302,16 @@
       } catch (e) {
         const tag = l.block.querySelector('.status-tag');
         if (tag) {
-          // 后端会对重复提取返回具体原因(如"该链接正在解析中/已解析完成"),
-          // 用橙色区分于真实解析失败(红色),避免用户误判。
+          // 后端会对重复提取返回 [DUP_EXTRACT] 错误码(带文案兜底),用橙色区分
+          // 于真实解析失败(红色),避免用户误判。判断按错误码,不再依赖文案(G-3)。
           const msg = (e && e.message) ? e.message : '解析失败';
-          const isDup = msg.indexOf('该链接') === 0;
+          const isDup = msg.indexOf('[DUP_EXTRACT]') === 0;
           // 插件内只显示简要原因(「｜详情」之前),完整错误在任务中心/日志。
           tag.textContent = (isDup ? '⚠️ ' : '❌ ') + brief(msg);
           tag.title = msg;  // hover 看完整
           tag.style.color = isDup ? '#e8a838' : '#d54941';
           // macOS 浏览器 cookies 权限错误(Safari 沙盒):一键直达「完全磁盘访问」面板
-          if (msg.indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+          if (isCookiesPermission(msg) && window.MT && MT.system) {
             const btn = document.createElement('button');
             btn.className = 'sm-btn';
             btn.style.marginLeft = '8px';
@@ -450,7 +457,8 @@
           playlist: (l.info.is_playlist) ? '1' : '',
           task_id: taskId,
         }, { timeout: 0 });
-        if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
+        // r 判空(C-3):后端成功但 data 为 null 的边界,直接访问 r.output_dir 会 TypeError
+        if (r && r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         if (prog) { prog.textContent = '100%'; prog.classList.add('done'); }
         if (check) check.classList.add('show');
       } catch (e) {
@@ -470,7 +478,7 @@
           err.textContent = brief(msg);
           err.title = msg;
           err.style.cssText = 'font-size:12px;color:#d54941;margin-top:4px;word-break:break-all;';
-          if (msg.indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+          if (isCookiesPermission(msg) && window.MT && MT.system) {
             const b = document.createElement('button');
             b.className = 'sm-btn';
             b.style.marginLeft = '8px';

@@ -175,7 +175,7 @@ impl TaskQueue {
             completed_at: None,
         };
         queue.tasks.insert(task_id.clone(), task);
-        queue.save().unwrap_or(());
+        queue.save_log("persist");
         task_id
     }
 
@@ -207,7 +207,7 @@ impl TaskQueue {
             } else if matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) {
                 task.completed_at = Some(chrono::Utc::now().to_rfc3339());
             }
-            queue.save().unwrap_or(());
+            queue.save_log("persist");
         }
     }
 
@@ -253,7 +253,7 @@ impl TaskQueue {
             }
         }
         if changed {
-            queue.save().unwrap_or(());
+            queue.save_log("persist");
         }
     }
 
@@ -276,7 +276,7 @@ impl TaskQueue {
             if matches!(task.status, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused) {
                 task.status = TaskStatus::Cancelled;
                 task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                queue.save().unwrap_or(());
+                queue.save_log("persist");
                 return true;
             }
         }
@@ -293,7 +293,7 @@ impl TaskQueue {
         if let Some(task) = queue.tasks.get_mut(task_id) {
             if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
                 task.status = TaskStatus::Paused;
-                queue.save().unwrap_or(());
+                queue.save_log("persist");
                 return true;
             }
         }
@@ -312,7 +312,7 @@ impl TaskQueue {
                 if task.started_at.is_none() {
                     task.started_at = Some(chrono::Utc::now().to_rfc3339());
                 }
-                queue.save().unwrap_or(());
+                queue.save_log("persist");
                 return true;
             }
         }
@@ -356,9 +356,87 @@ impl TaskQueue {
         fs::rename(&tmp, &tasks_file).map_err(|e| e.to_string())
     }
 
+    /// 落盘失败显式记录(G-5):任务状态持久化失败静默会让用户以为已保存
+    /// (重启后任务丢失),必须进日志。`ctx` 标注触发场景便于定位。
+    fn save_log(&mut self, ctx: &str) {
+        if let Err(e) = self.save() {
+            log::error!("TaskQueue save failed ({}) : {}", ctx, e);
+        }
+    }
+
     fn tasks_path() -> PathBuf {
-        dirs::home_dir()
-            .map(|d| d.join(".plugkit/tasks/tasks.json"))
-            .unwrap_or_default()
+        crate::paths::tasks_file()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 状态机迁移表(E-1):合法迁移放行、终态冻结、幂等放行。
+    /// 回归 G-5 设计:此前 update_status 可任意设置,暂停死循环等状态不一致
+    /// 问题的根因;迁移表变更必须先改这里。
+    #[test]
+    fn state_transition_table() {
+        use TaskStatus::*;
+        // 合法迁移(与 can_transition 的 matches! 列表严格一致)
+        let legal = [
+            (Pending, Running), (Pending, Paused), (Pending, Failed),
+            (Pending, Cancelled), (Pending, Interrupted),
+            (Running, Paused), (Running, Completed), (Running, Failed),
+            (Running, Cancelled), (Running, Interrupted),
+            (Paused, Running), (Paused, Completed), (Paused, Failed),
+            (Paused, Cancelled), (Paused, Interrupted),
+        ];
+        for (f, t) in legal {
+            assert!(can_transition(&f, &t), "{:?} -> {:?} 应合法", f, t);
+        }
+        // 终态冻结:终态不可迁出(除幂等自身)
+        let all = [Pending, Running, Paused, Completed, Failed, Cancelled, Interrupted];
+        for f in [Completed, Failed, Cancelled, Interrupted] {
+            for t in &all {
+                if f == *t {
+                    continue;
+                }
+                assert!(!can_transition(&f, t), "{:?} -> {:?} 应非法(终态冻结)", f, t);
+            }
+        }
+        // 幂等迁移放行(recover 重复执行等场景)
+        for s in [Pending, Running, Paused] {
+            assert!(can_transition(&s, &s), "{:?} -> 自身 应幂等放行", s);
+        }
+    }
+
+    /// 任务创建:uuid 唯一、初始字段正确。
+    /// 注意:不能走 TaskQueue::new()(它会从真实 ~/.plugkit/tasks/tasks.json
+    /// 恢复历史任务,测试会读到用户真实数据)——直接构造空队列。
+    #[test]
+    fn create_inner_initializes_task() {
+        let mut q = TaskQueue {
+            tasks: HashMap::new(),
+        };
+        let id1 = TaskQueue::create_inner(
+            &mut q, "download", "info", Some("https://a.example".to_string()),
+        );
+        let id2 = TaskQueue::create_inner(
+            &mut q, "download", "info", Some("https://b.example".to_string()),
+        );
+        assert_ne!(id1, id2, "task_id 必须唯一");
+        assert_eq!(q.tasks.len(), 2);
+
+        let t = q.tasks.get(&id1).unwrap();
+        assert_eq!(t.plugin_id, "download");
+        assert_eq!(t.type_, "info");
+        assert_eq!(t.status, TaskStatus::Pending);
+        assert_eq!(t.url.as_deref(), Some("https://a.example"));
+        assert_eq!(t.progress.percent, 0.0);
+        assert!(t.error.is_none());
+        assert!(!t.created_at.is_empty());
+    }
+
+    /// 任务历史保留期常量:7 天(与 UI/文档口径一致,防误改)。
+    #[test]
+    fn retention_days_is_seven() {
+        assert_eq!(TaskQueue::RETENTION_DAYS, 7);
     }
 }

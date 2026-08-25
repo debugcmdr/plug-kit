@@ -92,12 +92,22 @@ export const tasksLoading = ref(false)
  * 抽成纯函数以便单元测试回归(如 type_ -> type 字段映射)。
  */
 export function mapTask(r: Record<string, unknown>): Task {
+  const rawProgress = (r.progress ?? {}) as { percent?: unknown; speed?: unknown; eta?: unknown; message?: unknown }
+  // percent 兜底 + clamp 0-100(A-1):后端异常/缺失时 TaskPanel 的
+  // `task.progress.percent.toFixed(0)` 不再运行时崩溃(此前可能 TypeError)。
+  const rawPercent = Number(rawProgress.percent ?? 0)
+  const percent = Number.isFinite(rawPercent) ? Math.min(100, Math.max(0, rawPercent)) : 0
   return {
     task_id: String(r.task_id ?? ''),
     plugin_id: String(r.plugin_id ?? ''),
     type: String(r.type ?? ''),
     status: String(r.status ?? 'pending') as Task['status'],
-    progress: (r.progress as { percent: number; speed?: string; eta?: string; message?: string }) ?? { percent: 0 },
+    progress: {
+      percent,
+      speed: typeof rawProgress.speed === 'string' ? rawProgress.speed : undefined,
+      eta: typeof rawProgress.eta === 'string' ? rawProgress.eta : undefined,
+      message: typeof rawProgress.message === 'string' ? rawProgress.message : undefined,
+    },
     error: r.error ? String(r.error) : undefined,
     file_name: r.file_name ? String(r.file_name) : undefined,
     output_path: r.output_path ? String(r.output_path) : undefined,

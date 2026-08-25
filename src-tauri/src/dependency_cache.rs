@@ -38,9 +38,11 @@ pub struct DependencyCache {
 
 impl DependencyCache {
     pub fn new() -> Self {
-        let cache_dir = dirs::home_dir()
-            .map(|d| d.join(".plugkit/cache/deps"))
-            .unwrap_or_default();
+        Self::with_dir(crate::paths::cache_deps_dir())
+    }
+
+    /// 指定缓存目录构造(测试用:避免单测读写真实 ~/.plugkit 缓存)。
+    fn with_dir(cache_dir: PathBuf) -> Self {
         Self {
             cache_dir: cache_dir.clone(),
             registry_path: cache_dir.join("registry.json"),
@@ -206,8 +208,11 @@ impl DependencyCache {
         // 报错与真实原因脱节,极难排查)。
         let bin_path = dest_dir.join(binary_name);
         if self.is_valid_cached_binary(&bin_path, sha256) {
-            // Increment refcount
+            // 递增引用计数(B-1):必须落盘——否则新插件对该依赖的引用只存在于
+            // 内存 registry,卸载时 decrement_refcount_for_plugin 读磁盘旧 refs,
+            // 会把仍被其他插件使用的依赖误删(clean_orphans 按 refcount==0 清理)。
             self.increment_refcount(&mut registry, name, version, platform, ref_plugins)?;
+            registry.save(&self.registry_path).map_err(|e| e.to_string())?;
             return Ok(dest_dir);
         }
         // 无效缓存(0 字节/损坏):删除后重新下载
@@ -616,5 +621,108 @@ impl DependencyCache {
             }
         }
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 临时缓存目录隔离,不触碰真实 ~/.plugkit。
+    fn temp_cache() -> (DependencyCache, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "plugkit-test-cache-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap(); // registry.save 不负责建目录
+        let dc = DependencyCache::with_dir(dir.clone());
+        (dc, dir)
+    }
+
+    /// 引用计数增删对称(E-1):两个插件先后「安装」(递增两次并落盘)、
+    /// 卸载一个 → refs/refcount 与磁盘 registry 一致。
+    /// 回归 B-1:缓存命中分支若只递增内存不 save,磁盘 refs 缺 plugin-b,
+    /// 卸载 plugin-a 会把 refcount 减到 0,clean_orphans 误删仍被 b 使用的依赖。
+    #[tokio::test]
+    async fn refcount_incr_symmetry_with_decr() {
+        let (dc, dir) = temp_cache();
+
+        // 模拟插件 A 安装:登记条目 + 递增引用 + 落盘(即 install_dependency
+        // 缓存命中分支修复后的行为)
+        {
+            let mut reg = Registry::load_or_new(&dc.registry_path).unwrap();
+            dc.add_to_registry(
+                &mut reg,
+                "ffmpeg",
+                "1.0",
+                "test",
+                DepEntry {
+                    path: "ffmpeg/1.0".into(),
+                    sha256: String::new(),
+                    size: 0,
+                    refcount: 0,
+                    refs: vec![],
+                    last_accessed: 0,
+                },
+            )
+            .unwrap();
+            dc.increment_refcount(&mut reg, "ffmpeg", "1.0", "test", &["plugin-a"])
+                .unwrap();
+            reg.save(&dc.registry_path).unwrap();
+        }
+        // 模拟插件 B 安装:命中缓存 → 递增 + 落盘
+        {
+            let mut reg = Registry::load_or_new(&dc.registry_path).unwrap();
+            dc.increment_refcount(&mut reg, "ffmpeg", "1.0", "test", &["plugin-b"])
+                .unwrap();
+            reg.save(&dc.registry_path).unwrap();
+        }
+
+        // 卸载 plugin-a:refs=[b]、refcount=1,条目保留
+        dc.decrement_refcount_for_plugin("plugin-a").await.unwrap();
+        let reg = Registry::load_or_new(&dc.registry_path).unwrap();
+        let entry = reg.ffmpeg.get("1.0").unwrap().get("test").unwrap();
+        assert_eq!(entry.refs, vec!["plugin-b".to_string()]);
+        assert_eq!(entry.refcount, 1);
+
+        // 卸载 plugin-b:refs=[]、refcount=0 → clean_orphans 可回收
+        dc.decrement_refcount_for_plugin("plugin-b").await.unwrap();
+        let reg = Registry::load_or_new(&dc.registry_path).unwrap();
+        let entry = reg.ffmpeg.get("1.0").unwrap().get("test").unwrap();
+        assert!(entry.refs.is_empty());
+        assert_eq!(entry.refcount, 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 重复递增去重:同一插件安装两次,refs 不重复、refcount 不虚增
+    /// (increment_refcount 按 plugin_id 去重)。
+    #[test]
+    fn refcount_dedup_same_plugin() {
+        let (dc, dir) = temp_cache();
+        let mut reg = Registry::load_or_new(&dc.registry_path).unwrap();
+        dc.add_to_registry(
+            &mut reg,
+            "yt-dlp",
+            "2.0",
+            "test",
+            DepEntry {
+                path: "yt-dlp/2.0".into(),
+                sha256: String::new(),
+                size: 0,
+                refcount: 0,
+                refs: vec![],
+                last_accessed: 0,
+            },
+        )
+        .unwrap();
+        dc.increment_refcount(&mut reg, "yt-dlp", "2.0", "test", &["p"]).unwrap();
+        dc.increment_refcount(&mut reg, "yt-dlp", "2.0", "test", &["p"]).unwrap();
+        let entry = reg.yt_dlp.get("2.0").unwrap().get("test").unwrap();
+        assert_eq!(entry.refs, vec!["p".to_string()]);
+        assert_eq!(entry.refcount, 1); // 不虚增
+        let _ = fs::remove_dir_all(&dir);
     }
 }

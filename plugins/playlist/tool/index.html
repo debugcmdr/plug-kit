@@ -128,6 +128,13 @@
       return head.length > 90 ? head.slice(0, 90) + '…' : head;
     }
 
+    // 浏览器 cookies 权限错误判断:按结构化错误码 [COOKIES_PERMISSION](优先),
+    // 保留文案兜底(兼容旧版主程序/未带码的错误来源)。
+    function isCookiesPermission(msg) {
+      const s = String(msg || '');
+      return s.indexOf('[COOKIES_PERMISSION]') >= 0 || s.indexOf('完全磁盘访问') >= 0;
+    }
+
     // 页面内浮动提示:沙盒 iframe 无 allow-modals,alert/confirm 会被浏览器静默阻断,
     // 统一改用 toast 保证用户可见(替代原 alert/confirm 调用)。
     let toastEl = null
@@ -227,7 +234,7 @@
         // macOS cookies 权限错误(Safari 沙盒):直接打开「完全磁盘访问」面板
         // (用户已触发该错误即表达授权意图,不再用 confirm 二次确认——confirm 在
         // 沙盒 iframe 中同样会被静默阻断)。
-        if (String(msg).indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+        if (isCookiesPermission(msg) && window.MT && MT.system) {
           MT.system.openPermissionSettings().catch(() => {});
         }
       } finally {
@@ -415,7 +422,8 @@
           cookies: cookiesSetting || '',
           task_id: taskId,
         }, { timeout: 0 });
-        if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
+        // r 判空(C-3):后端成功但 data 为 null 的边界
+        if (r && r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         msg.textContent = '下载完成 ✓';
         pct.textContent = '100%';
         fill.style.width = '100%';
@@ -427,7 +435,7 @@
         msg.style.color = '#d54941';
         fill.style.background = '#d54941';
         // macOS cookies 权限错误:错误全文已在上面展示,附一键直达授权面板
-        if (full.indexOf('完全磁盘访问') >= 0 && window.MT && MT.system) {
+        if (isCookiesPermission(full) && window.MT && MT.system) {
           const b = document.createElement('button');
           b.className = 'sm-btn';
           b.style.marginLeft = '8px';
@@ -458,10 +466,11 @@
           cookies: cookiesSetting || '',
           mode: mode,
         }, { timeout: 0 });
-        if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
-        const label = r.format === 'links' ? '链接清单' : '全量信息 CSV';
-        toast(`已导出${label} (${r.format.toUpperCase()}):\n${r.file}\n\n共 ${r.count} 条` +
-          (r.format === 'csv' ? '\n\n提示:全量信息为逐集提取,耗时较长属正常;缺字段的平台对应列会留空。' : ''));
+        if (r && r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
+        const fmt = r && r.format ? r.format : 'full';
+        const label = fmt === 'links' ? '链接清单' : '全量信息 CSV';
+        toast(`已导出${label} (${String(fmt).toUpperCase()}):\n${r && r.file}\n\n共 ${r && r.count} 条` +
+          (fmt === 'csv' ? '\n\n提示:全量信息为逐集提取,耗时较长属正常;缺字段的平台对应列会留空。' : ''));
         try { await MT.openPath(r.output_dir); } catch (e2) { /* 静默 */ }
       } catch (e) {
         toast('导出失败: ' + brief((e && e.message) || e), true);

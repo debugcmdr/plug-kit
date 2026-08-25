@@ -24,8 +24,8 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 28289,
-      "sha256": "d45700b97f71a8a66bfdfa237bf34bafd2cdc045171c1a649ba09f9e1bff9641",
+      "size": 29341,
+      "sha256": "e34759d1af250ce0f89e84c62e53c535e7a67d05ab9bb6bb944f1b43ae864e36",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/download-0.3.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
@@ -50,8 +50,8 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 30750,
-      "sha256": "57971ac68acfc568c543de57470db2d79e03958f80a8c1fba0344d74b69c3073",
+      "size": 31536,
+      "sha256": "239781f6bfb4af6b106cecbeb680f434bca47632ebbcb3319c713d1cce06798f",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/convert-0.6.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"
@@ -77,8 +77,8 @@
         "macos-x64",
         "linux-x64"
       ],
-      "size": 25162,
-      "sha256": "75a0c0879a755f3f85216093a0dc42e560c13fd2d9f848fb8a511d613ee4de7e",
+      "size": 26506,
+      "sha256": "f837e3ca0f37c48900f4ed6542b2c3d26bc3677e525be54659699df8571bd81f",
       "binaryUrl": "https://github.com/debugcmdr/plug-kit/releases/latest/download/playlist-0.2.0.zip",
       "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest",
       "homepage": "https://github.com/debugcmdr/plug-kit"

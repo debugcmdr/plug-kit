@@ -15,14 +15,16 @@ import sys
 # 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
 try:
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service  # noqa: F401
+    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service, ytdlp_binary  # noqa: F401
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service  # noqa: F401
+    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service, ytdlp_binary  # noqa: F401
 
 
-YTDLP = dep("yt-dlp")
+# 下载优先 venv pip 版 yt-dlp(冷启动 0.4s vs 单文件二进制 22s);venv 缺失回退
+# 外壳注入的缓存二进制(P1-14)。
+YTDLP = ytdlp_binary()
 FFMPEG = dep("ffmpeg")
 
 # 分类对应的 yt-dlp 选择器

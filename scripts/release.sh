@@ -40,9 +40,12 @@ PYEOF
 # (与 install 期"配置公钥后未签名拒绝安装"保持一致性);
 # 未配置 → 仅警告不阻断(签名是可选项,用户可故意不启用)。
 python3 - <<'PYEOF'
-import json, sys
+import json, re, sys
 sec = open('src-tauri/src/security.rs', encoding='utf-8').read()
-configured = 'OFFICIAL_PUBLIC_KEY:Option<&str>=None;' not in sec.replace(' ', '')
+# 正则解析常量赋值(D-2):原字符串匹配对格式/注释变化敏感(如缩进、`Option < &str>`),
+# 误判会导致「实际已配置公钥却被跳过签名门禁」。
+m = re.search(r'OFFICIAL_PUBLIC_KEY\s*:\s*Option\s*<\s*&str\s*>\s*=\s*(Some\([^)]*\)|None)', sec)
+configured = bool(m and m.group(1).startswith('Some'))
 market = json.load(open('market/plugins.json'))['plugins']
 unsigned = [p['id'] for p in market if not p.get('signature')]
 if configured:
@@ -80,8 +83,11 @@ EXISTING="$(gh_auth | curl -s -H @- "https://api.github.com/repos/$REPO/releases
 RELEASE_ID="$(echo "$EXISTING" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id",""))' 2>/dev/null || true)"
 
 if [ -z "$RELEASE_ID" ]; then
+  # JSON body 用 python3 构造(D-3):TAG/TITLE 含引号或特殊字符时,直接拼字符串
+  # 会破坏 JSON 导致创建失败(发布者输入,不可信)。
+  BODY="$(python3 -c "import json,sys; print(json.dumps({'tag_name':sys.argv[1],'name':sys.argv[2],'body':'PlugKit %s — 内置插件包' % sys.argv[1],'draft':False,'prerelease':False}))" "$TAG" "$TITLE")"
   RESP="$(gh_auth 'Content-Type: application/json' | curl -s -X POST -H @- \
-    -d "{\"tag_name\":\"$TAG\",\"name\":\"$TITLE\",\"body\":\"PlugKit $TAG — 内置插件包\",\"draft\":false,\"prerelease\":false}" \
+    -d "$BODY" \
     "https://api.github.com/repos/$REPO/releases")"
   RELEASE_ID="$(echo "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id",""))')"
   [ -n "$RELEASE_ID" ] || { echo "创建 Release 失败: $RESP"; exit 1; }

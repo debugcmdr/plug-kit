@@ -18,10 +18,7 @@ pub struct ConfigMgr {
 impl ConfigMgr {
     pub fn new() -> Self {
         Self {
-            configs_root: dirs::home_dir()
-                .unwrap_or_default()
-                .join(".plugkit")
-                .join("configs"),
+            configs_root: crate::paths::configs_dir(),
         }
     }
 

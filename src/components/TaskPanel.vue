@@ -66,9 +66,11 @@ const stats = computed(() => {
 const FILTERS = [
   { key: 'all', label: '全部' },
   { key: 'running', label: '运行中' },
+  { key: 'paused', label: '已暂停' },
   { key: 'failed', label: '失败' },
   { key: 'completed', label: '已完成' },
   { key: 'cancelled', label: '已取消' },
+  { key: 'interrupted', label: '已中断' },
 ] as const
 
 // 状态中文名:配合轻量「圆点+文字」展示,替代整块彩色标签。
@@ -79,19 +81,33 @@ const STATUS_LABEL: Record<string, string> = {
 
 async function handleCancel(task: Task) {
   if (task.status === 'running' || task.status === 'pending' || task.status === 'paused') {
-    await cancelTask(task.task_id)
+    try {
+      await cancelTask(task.task_id)
+    } catch (e) {
+      // 取消失败必须可见(A-2):如任务恰好完成/已取消,后端返回错误时
+      // 静默产生 unhandled rejection 且用户无反馈会误以为取消成功。
+      message.error(`取消失败: ${e}`)
+    }
   }
 }
 
 async function handlePause(task: Task) {
   if (task.status === 'running' || task.status === 'pending') {
-    await pauseTask(task.task_id)
+    try {
+      await pauseTask(task.task_id)
+    } catch (e) {
+      message.error(`暂停失败: ${e}`)
+    }
   }
 }
 
 async function handleResume(task: Task) {
   if (task.status === 'paused') {
-    await resumeTask(task.task_id)
+    try {
+      await resumeTask(task.task_id)
+    } catch (e) {
+      message.error(`恢复失败: ${e}`)
+    }
   }
 }
 

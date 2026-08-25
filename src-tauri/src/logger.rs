@@ -41,10 +41,7 @@ impl Logger {
     }
 
     fn write_log(level: &str, msg: &str) {
-        let log_dir = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".plugkit")
-            .join("logs");
+        let log_dir = crate::paths::logs_dir();
         let log_file = log_dir.join(format!("{}.log", Local::now().format("%Y-%m-%d")));
 
         if let Some(parent) = log_file.parent() {

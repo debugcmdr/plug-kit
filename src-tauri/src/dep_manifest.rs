@@ -150,8 +150,11 @@ pub fn dep_available_on_path(name: &str) -> bool {
             .arg(&exe)
             .output()
     } else {
+        // 参数化探测(B-4):依赖名来自插件 manifest(不可信输入),字符串拼接进
+        // `sh -c "command -v {name}"` 可被注入 shell 命令。改为位置参数传递,
+        // sh 只把它当 $1 处理,特殊字符不再被解释。
         std::process::Command::new("sh")
-            .args(["-c", &format!("command -v {} 2>/dev/null", exe)])
+            .args(["-c", "command -v \"$1\"", "sh", &exe])
             .output()
     };
     let available = matches!(output, Ok(o) if o.status.success() && !o.stdout.is_empty());

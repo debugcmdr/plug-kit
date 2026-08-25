@@ -124,9 +124,7 @@ impl ToolRunner {
         Self {
             // 任务工作目录与插件安装临时目录(~/.plugkit/tmp)分离：
             // 安装插件时清理 tmp/{plugin_id} 不会误删运行中任务的工作目录。
-            work_dir: dirs::home_dir()
-                .map(|d| d.join(".plugkit/work"))
-                .unwrap_or_default(),
+            work_dir: crate::paths::work_dir(),
         }
     }
 
@@ -593,18 +591,14 @@ impl ToolRunner {
     }
 
     fn plugin_dir(&self, plugin_id: &str) -> PathBuf {
-        dirs::home_dir()
-            .map(|d| d.join(".plugkit/plugins").join(plugin_id))
-            .unwrap_or_default()
+        crate::paths::plugins_dir().join(plugin_id)
     }
 
     /// Substitute `{var}` placeholders from params, plus `{platform}`.
     fn substitute_args(&self, args: &[String], params: &Value, _manifest: &crate::manifest_model::Manifest) -> Vec<String> {
-        let platform = if cfg!(all(target_os = "windows", target_arch = "x86_64")) { "windows-x64" }
-            else if cfg!(all(target_os = "macos", target_arch = "aarch64")) { "macos-arm64" }
-            else if cfg!(all(target_os = "macos", target_arch = "x86_64")) { "macos-x64" }
-            else if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "linux-x64" }
-            else { "unknown" };
+        // 平台串统一由 dep_manifest::current_platform() 提供(G-7:避免第三处
+        // 内联重复判断——plugin_manager/tool_runner 曾各写一份)。
+        let platform = crate::dep_manifest::current_platform();
 
         // 模板中出现的占位符集合(替换前):strip 阶段只清理"模板存在但参数未提供"的
         // 占位符,绝不能对任意 {identifier} 下手——用户文件路径里的 {1} 等花括号
@@ -620,25 +614,11 @@ impl ToolRunner {
         let unfilled: std::collections::HashSet<String> =
             template_keys.difference(&provided).cloned().collect();
 
+        // 一次性替换(B-8):单次遍历 arg,遇到 {name} 直接查值替换,替换结果不再
+        // 参与后续替换——原实现按 params 逐 key replace,某个参数值里含的字面
+        // {other_key}(如用户文件名 "报告{output}版.mp4")会被下一轮错误替换污染。
         args.iter()
-            .map(|arg| {
-                let mut result = arg.clone();
-                result = result.replace("{platform}", platform);
-                if let Value::Object(map) = params {
-                    for (key, value) in map {
-                        let placeholder = format!("{{{}}}", key);
-                        let value_str = match value {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        result = result.replace(&placeholder, &value_str);
-                    }
-                }
-                // 未提供的参数占位符(如 {output_dir} 为空)替换为空,避免字面量残留
-                // 例: --output-dir {output_dir} → --output-dir ""(插件端回退默认路径)
-                result = strip_unfilled_placeholders(&result, &unfilled);
-                result
-            })
+            .map(|arg| substitute_arg_once(arg, &platform, params, &unfilled))
             .collect()
     }
 
@@ -750,72 +730,101 @@ fn extract_template_placeholders(s: &str) -> Vec<String> {
     out
 }
 
-/// 把字符串里残留的 `{name}` 占位符替换为空,但**仅限 `unfilled` 集合中的键**
-/// (即 manifest 模板声明过、本次调用未提供的参数)。
+/// 单参数一次性占位符替换(替代原"逐 key replace + 二次 strip"两段式):
+/// - `{platform}` → 平台串(恒替换)
+/// - `{name}`(params 含该键) → 参数值;替换值不再参与后续替换(B-8)
+/// - `{name}`(模板声明过但本次未提供,即 unfilled) → 清空,避免字面量残留
+///   例: --output-dir {output_dir} → --output-dir ""(插件端回退默认路径)
+/// - 其余 `{...}`(用户文本/非标识符,如路径里的 {2}) → 原样保留
 ///
 /// ⚠️ 必须按 UTF-8 字符边界处理,不能逐字节重建字符串:
 /// 旧实现用 `bytes[i] as char` 逐字节转码,会把中文等多字节字符拆坏
 /// (曾导致中文路径变成乱码,插件报"输入文件不存在")。
-///
-/// ⚠️ 不能对任意 {identifier} 一律删除(R-7):用户输入的文件路径/标题里含
-/// `{1}` 等花括号文本(如 "报告{2}版.mp4")会被误删改写路径——只有模板占位符才删。
-fn strip_unfilled_placeholders(s: &str, unfilled: &std::collections::HashSet<String>) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while !rest.is_empty() {
-        match rest.find('{') {
-            None => {
-                // 剩余部分原样保留(含多字节字符)
-                out.push_str(rest);
-                break;
-            }
-            Some(idx) => {
-                // '{' 之前的内容原样保留
-                out.push_str(&rest[..idx]);
-                let tail = &rest[idx..];
-                // 尝试匹配 {identifier}
-                if let Some(close_rel) = tail[1..].find('}') {
-                    let name = &tail[1..1 + close_rel];
-                    let is_placeholder = !name.is_empty()
-                        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                        && unfilled.contains(name);
-                    if is_placeholder {
-                        // 是"未填充的模板占位符" → 整个跳过
+fn substitute_arg_once(
+    arg: &str,
+    platform: &str,
+    params: &Value,
+    unfilled: &std::collections::HashSet<String>,
+) -> String {
+    let mut out = String::with_capacity(arg.len());
+    let mut rest = arg;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        match tail[1..].find('}') {
+            Some(close_rel) => {
+                let name = &tail[1..1 + close_rel];
+                let is_ident = !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                let value = if name == "platform" {
+                    Some(platform.to_string())
+                } else if is_ident {
+                    match params {
+                        Value::Object(map) => map.get(name).map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        }),
+                        _ => None,
+                    }
+                    .or_else(|| {
+                        if unfilled.contains(name) {
+                            Some(String::new()) // 模板占位符未提供 → 清空
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None // 非标识符(如 {x-y})不算占位符 → 保留
+                };
+                match value {
+                    Some(v) => {
+                        out.push_str(&v);
                         rest = &tail[1 + close_rel + 1..];
-                        continue;
+                    }
+                    None => {
+                        // 非模板占位符(用户路径/普通文本里的花括号)→ 保留 '{'
+                        out.push('{');
+                        rest = &tail[1..];
                     }
                 }
-                // 非模板占位符(用户路径/普通文本里的花括号)→ 保留这个 '{' 并继续
+            }
+            None => {
                 out.push('{');
                 rest = &tail[1..];
             }
         }
     }
+    out.push_str(rest);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashSet;
 
     fn set(keys: &[&str]) -> HashSet<String> {
         keys.iter().map(|s| s.to_string()).collect()
     }
 
+    fn sub(arg: &str, params: &Value, unfilled: &HashSet<String>) -> String {
+        substitute_arg_once(arg, "macos-arm64", params, unfilled)
+    }
+
     #[test]
     fn strip_keeps_utf8_chinese_path_intact() {
         // 回归:中文等多字节字符不能被逐字节拆坏(曾导致"输入文件不存在")
         let path = "/Users/main/Documents/备用文件/fc2-ppv-1637514-HD/fc2-ppv-1637514-nyap2p.com.mp4";
-        assert_eq!(strip_unfilled_placeholders(path, &set(&[])), path);
+        assert_eq!(sub(path, &json!({}), &set(&[])), path);
     }
 
     #[test]
     fn strip_removes_placeholder_only() {
-        assert_eq!(strip_unfilled_placeholders("--output-dir {output_dir}", &set(&["output_dir"])), "--output-dir ");
-        assert_eq!(strip_unfilled_placeholders("{output_dir}", &set(&["output_dir"])), "");
+        assert_eq!(sub("--output-dir {output_dir}", &json!({}), &set(&["output_dir"])), "--output-dir ");
+        assert_eq!(sub("{output_dir}", &json!({}), &set(&["output_dir"])), "");
         assert_eq!(
-            strip_unfilled_placeholders("--quality {quality} --input {input}", &set(&["quality", "input"])),
+            sub("--quality {quality} --input {input}", &json!({}), &set(&["quality", "input"])),
             "--quality  --input "
         );
     }
@@ -823,11 +832,11 @@ mod tests {
     #[test]
     fn strip_keeps_non_placeholder_braces_and_mixed() {
         // 含空格/连字符的 {…} 不是 identifier 占位符 → 保留
-        assert_eq!(strip_unfilled_placeholders("a{b c}d", &set(&[])), "a{b c}d");
-        assert_eq!(strip_unfilled_placeholders("a{x-y}d", &set(&[])), "a{x-y}d");
+        assert_eq!(sub("a{b c}d", &json!({}), &set(&[])), "a{b c}d");
+        assert_eq!(sub("a{x-y}d", &json!({}), &set(&[])), "a{x-y}d");
         // 中文 + 占位符混合(中文是 alphanumeric,算占位符);{dir} 在 unfilled 中才删
         assert_eq!(
-            strip_unfilled_placeholders("下载到{dir}/备用文件夹", &set(&["dir"])),
+            sub("下载到{dir}/备用文件夹", &json!({}), &set(&["dir"])),
             "下载到/备用文件夹"
         );
     }
@@ -836,8 +845,23 @@ mod tests {
     fn strip_keeps_user_path_braces_not_in_template() {
         // R-7 回归:用户文件路径中的 {数字} 等花括号文本不属于模板占位符 → 必须保留
         let path = "/a/报告{2}最终版.mp4";
-        assert_eq!(strip_unfilled_placeholders(path, &set(&["output"])), path);
-        assert_eq!(strip_unfilled_placeholders(path, &set(&[])), path);
+        assert_eq!(sub(path, &json!({}), &set(&["output"])), path);
+        assert_eq!(sub(path, &json!({}), &set(&[])), path);
+    }
+
+    #[test]
+    fn params_replace_once_no_second_pass_pollution() {
+        // B-8 回归:参数值里的字面 {other_key} 不得被后续替换污染。
+        // 原实现逐 key replace:input 值含 {output} → 被 output 值 "y" 二次污染。
+        let params = json!({ "input": "x{output}.mp4", "output": "y" });
+        assert_eq!(sub("{input}", &params, &set(&[])), "x{output}.mp4");
+    }
+
+    #[test]
+    fn platform_placeholder_replaced() {
+        assert_eq!(sub("--p {platform}", &json!({}), &set(&[])), "--p macos-arm64");
+        // params 里的 platform 键不覆盖 {platform} 恒替换语义(与原实现一致)
+        assert_eq!(sub("{platform}", &json!({ "platform": "x" }), &set(&[])), "macos-arm64");
     }
 
     #[test]

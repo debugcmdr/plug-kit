@@ -15,9 +15,7 @@ fn bundled_plugins_root(app: &tauri::AppHandle) -> PathBuf {
 
 /// 用户插件目录。
 fn user_plugins_root() -> PathBuf {
-    dirs::home_dir()
-        .map(|d| d.join(".plugkit/plugins"))
-        .unwrap_or_default()
+    crate::paths::plugins_dir()
 }
 
 /// 启动时执行预装检查:对资源目录下每个带 manifest.json 的插件,若用户

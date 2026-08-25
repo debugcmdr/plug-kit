@@ -41,6 +41,11 @@ impl Manifest {
     pub fn has_ui(&self) -> bool {
         self.ui.is_some()
     }
+
+    /// 插件可执行文件所在目录(相对插件根)。
+    pub fn tool_dir(&self) -> &str {
+        &self.entry.tool_dir
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,10 +75,4 @@ pub struct UiDefinition {
     #[serde(rename = "type")]
     pub ui_type: String,
     pub html: String,
-}
-
-impl Manifest {
-    pub fn tool_dir(&self) -> &str {
-        &self.entry.tool_dir
-    }
 }

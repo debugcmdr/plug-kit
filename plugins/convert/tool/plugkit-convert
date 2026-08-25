@@ -34,7 +34,6 @@ AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".wma", ".aiff", 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tiff", ".avif", ".ico", ".psd"}
 
 
-
 def probe_duration(path):
     """ffprobe 获取时长(秒),用于进度计算。"""
     try:

@@ -43,33 +43,39 @@ function selectPlugin(target: string) {
 // 用 onMounted + await:确保 Tauri IPC 就绪后再注册监听(顶层调用可能时序错乱)。
 onMounted(async () => {
   // 转发 Tauri 进度事件给对应插件 iframe(plugkit:progress 供 bridge.js onProgress)
-  unlistenProgress = await listen('plugkit:task-progress', (event: any) => {
-    const { plugin_id, task_id, data } = event.payload || {}
-    if (!plugin_id) return
-    const iframe = document.querySelector(
-      `iframe[data-plugin-id="${plugin_id}"]`
-    ) as HTMLIFrameElement | null
-    // 保留 task_id 随进度下发给插件:并发任务(多链接下载)时,
-    // 插件可据此过滤归属,否则所有任务进度串台(广播无法区分)。
-    iframe?.contentWindow?.postMessage(
-      { type: 'plugkit:progress', data: { ...(data || {}), task_id } },
-      '*'
-    )
-  })
+  unlistenProgress = await listen<{ plugin_id?: string; task_id?: string; data?: Record<string, unknown> }>(
+    'plugkit:task-progress',
+    (event) => {
+      const { plugin_id, task_id, data } = event.payload || {}
+      if (!plugin_id) return
+      const iframe = document.querySelector(
+        `iframe[data-plugin-id="${plugin_id}"]`
+      ) as HTMLIFrameElement | null
+      // 保留 task_id 随进度下发给插件:并发任务(多链接下载)时,
+      // 插件可据此过滤归属,否则所有任务进度串台(广播无法区分)。
+      iframe?.contentWindow?.postMessage(
+        { type: 'plugkit:progress', data: { ...(data || {}), task_id } },
+        '*'
+      )
+    }
+  )
   // 系统文件拖入窗口:外壳 emit plugkit:files-dropped,按「当前激活插件」转发到其
   // iframe(plugkit:files-dropped 供 bridge.js onFilesDropped 监听)。
   // 业务过滤(扩展名/分类)由插件侧做,外壳/前端不掺和。
-  unlistenDropped = await listen('plugkit:files-dropped', (event: any) => {
-    const pid = activePlugin.value
-    if (!pid || pid === 'home') return
-    const iframe = document.querySelector(
-      `iframe[data-plugin-id="${pid}"]`
-    ) as HTMLIFrameElement | null
-    iframe?.contentWindow?.postMessage(
-      { type: 'plugkit:files-dropped', paths: event.payload?.paths || [] },
-      '*'
-    )
-  })
+  unlistenDropped = await listen<{ paths?: string[] }>(
+    'plugkit:files-dropped',
+    (event) => {
+      const pid = activePlugin.value
+      if (!pid || pid === 'home') return
+      const iframe = document.querySelector(
+        `iframe[data-plugin-id="${pid}"]`
+      ) as HTMLIFrameElement | null
+      iframe?.contentWindow?.postMessage(
+        { type: 'plugkit:files-dropped', paths: event.payload?.paths || [] },
+        '*'
+      )
+    }
+  )
   // 启动即后台预取市场清单 + 每 5 分钟轮询,使"打开市场"时数据已就绪,无需原地等待。
   startMarketPoll()
   // 任务数据全局轮询(侧边栏徽标/任务中心共享一份数据):

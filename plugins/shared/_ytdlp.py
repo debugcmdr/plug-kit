@@ -9,6 +9,15 @@
 
 import os
 
+# 首次创建解析 venv 时向任务中心报进度(C-2)。双路径导入与各插件 CLI 一致:
+# 生产(打包副本)/开发(shared 源码)均可用,测试加载本模块也不因缺 _protocol 挂掉。
+try:
+    from _protocol import progress  # noqa: F401
+except ImportError:
+    import sys as _sys0
+    _sys0.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _protocol import progress  # noqa: F401
+
 
 # --cookies-from-browser 支持的浏览器名
 BROWSER_NAMES = {
@@ -185,11 +194,29 @@ import subprocess as _subprocess
 import sys as _sys
 import time as _time
 
+# 下载/解析统一使用的 yt-dlp 版本(pinned,与 src-tauri/src/dep_manifest.rs 的
+# YTDLP_VERSION 保持同步——两处手工对齐,改版本必须同时改)。服务 pip install
+# 与「下载优先 venv」都以此为准,避免服务 latest 漂移与二进制 pinned 版本脱节。
+YTDLP_VERSION = "2026.08.19"
+
 SERVICE_SOCKET = f"/tmp/plugkit-ytdlp-{os.getuid()}.sock"
 VENV_DIR = os.path.expanduser("~/.plugkit/venvs/ytdlp")
 VENV_PY = os.path.join(VENV_DIR, "bin", "python")
 PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
 _SERVICE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ytdlp_service.py")
+
+
+def ytdlp_binary():
+    """下载路径优先 venv pip 版 yt-dlp(冷启动 ~0.4s vs 单文件二进制 ~22s,
+    PyInstaller 每次解包到临时目录是主要开销,实测本机 22s/0.4s)。
+
+    venv 缺失(Windows 无 AF_UNIX 不建 venv、首次服务未拉起)时回退
+    外壳注入的缓存二进制(dep("yt-dlp"))——下载功能不回归。
+    """
+    venv_exe = os.path.join(VENV_DIR, "bin", "yt-dlp")
+    if os.name == "posix" and os.path.isfile(venv_exe):
+        return venv_exe
+    return dep("yt-dlp")
 
 
 def _service_connect(timeout=2.0):
@@ -215,12 +242,19 @@ def _ensure_service():
         s.close()
         return True
     if not os.path.exists(VENV_PY):
+        # 首次创建 venv 阻塞较长,先向任务中心报进度,避免用户误判卡死(C-2)。
+        try:
+            progress(0, message="首次使用:正在准备解析环境(约 30 秒)…")
+        except Exception:
+            pass
         try:
             _subprocess.run([_sys.executable, "-m", "venv", VENV_DIR],
                             capture_output=True, timeout=120)
             if not os.path.exists(VENV_PY):
                 return False
-            _subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-i", PIP_MIRROR, "yt-dlp"],
+            # 版本 pin 与 dep_manifest.rs YTDLP_VERSION 对齐,防漂移
+            _subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-i", PIP_MIRROR,
+                             f"yt-dlp=={YTDLP_VERSION}"],
                             capture_output=True, timeout=300)
         except Exception:
             return False

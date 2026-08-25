@@ -17,8 +17,19 @@ let sharp
 try {
   sharp = require('sharp') // 项目内已有则用项目内
 } catch {
-  // 隔离 workspace 安装(不污染项目依赖)
-  sharp = require('/Users/main/.workbuddy/binaries/node/workspace/node_modules/sharp')
+  // 隔离 workspace 安装回退:优先 SHARP_PATH 环境变量,再试已知开发机路径;
+  // 均不可用则明确报错(不再硬编码单用户绝对路径,D-1——换机器/用户即失效)。
+  const candidates = [
+    process.env.SHARP_PATH,
+    '/Users/main/.workbuddy/binaries/node/workspace/node_modules/sharp',
+  ].filter(Boolean)
+  for (const p of candidates) {
+    try { sharp = require(p); break } catch { /* 该候选不可用,试下一个 */ }
+  }
+  if (!sharp) {
+    console.error('缺少 sharp:请在项目安装依赖(npm i -D sharp)或设置 SHARP_PATH 环境变量')
+    process.exit(1)
+  }
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')

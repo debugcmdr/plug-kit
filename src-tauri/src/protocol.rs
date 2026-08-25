@@ -91,7 +91,7 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
                 // CSP 必须无条件注入(R-12):此前 HTML 含 "plugkit-bridge.js" 字符串即
                 // 豁免,任何插件只要自己引 bridge 就绕过网络限制——威胁面敞口。
                 let csp = "default-src 'none'; script-src plugkit: 'unsafe-inline'; \
-                          style-src 'unsafe-inline'; img-src plugkit: data: https:; \
+                          style-src 'unsafe-inline'; img-src plugkit: data:; \
                           font-src plugkit: data:; connect-src 'none'; object-src 'none'; \
                           base-uri 'none'; form-action 'none'";
                 let meta = format!(
@@ -112,7 +112,7 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
                 let lower_ascii = html.to_ascii_lowercase();
                 let inject_after = find_head_tag(&lower_ascii)
                     .or_else(|| find_body_tag(&lower_ascii))
-                    .and_then(|h| html[h..].find('>').map(|gt| h + gt + 1));
+                    .and_then(|h| find_tag_end(&lower_ascii, h));
                 let injected = match inject_after {
                     Some(at) => {
                         let mut out = String::with_capacity(
@@ -177,6 +177,34 @@ fn find_body_tag(lower: &str) -> Option<usize> {
                 c.is_ascii_whitespace() || c == b'>' || c == b'/'
             })
         })
+}
+
+/// 从标签起始下标起,定位该标签的完整结束 `>`(跳过属性值中引号包裹的段)。
+/// 朴素 `find('>')` 在 `<head class="a>b">` 这类属性值含 `>` 的标签上会定位到
+/// 属性内,把 CSP meta 注入到属性值中间 → HTML 破坏且 CSP 失效(B-5)。
+fn find_tag_end(lower: &str, start: usize) -> Option<usize> {
+    let bytes = lower.as_bytes();
+    let mut i = start;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match in_quote {
+            Some(q) => {
+                if c == q {
+                    in_quote = None;
+                }
+            }
+            None => {
+                if c == b'"' || c == b'\'' {
+                    in_quote = Some(c);
+                } else if c == b'>' {
+                    return Some(i + 1);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 fn http_response(status: Status, content_type: &str, body: &[u8]) -> http::Response<Cow<'static, [u8]>> {

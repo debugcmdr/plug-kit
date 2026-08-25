@@ -8,8 +8,8 @@
   "tags": ["playlist", "channel", "batch", "download", "yt-dlp", "export"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
-    "yt-dlp": ">=2024.01.01",
-    "ffmpeg": ">=6.0"
+    "yt-dlp": "",
+    "ffmpeg": ""
   },
   "bridgeVersion": ">=1.0.0",
   "entry": {
@@ -28,7 +28,7 @@
     },
     "export": {
       "stdinArgs": ["export", "--url", "{url}", "--output-dir", "{output_dir}", "--cookies", "{cookies}", "--mode", "{mode}"],
-      "output": "json"
+      "output": "progress+json"
     }
   },
   "releaseUrl": "https://github.com/debugcmdr/plug-kit/releases/latest"

@@ -15,13 +15,15 @@ import sys
 # 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
 try:
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
 
-YTDLP = dep("yt-dlp")
+# 下载优先 venv pip 版 yt-dlp(冷启动 0.4s vs 单文件二进制 22s);venv 缺失回退
+# 外壳注入的缓存二进制(P1-14)。
+YTDLP = ytdlp_binary()
 # ffmpeg 不在本 CLI 直接调用,但 yt-dlp 合并(--merge-output-format)/转封装时
 # 内部经 PATH 查找它——显式声明确保安装期下载注入,并让 verify-manifests 的
 # dep() 依赖门禁能覆盖到这条隐式依赖(与 download 插件对齐)。
@@ -72,8 +74,10 @@ def list_playlist(url, cookies=""):
     _build_list_result(meta)
 
 
-def _build_list_result(meta):
-    """从 yt-dlp extract_info 结果(dict)构造播放列表响应(服务与直连共用)。"""
+def _build_list_result(meta, url=""):
+    """从 yt-dlp extract_info 结果(dict)构造播放列表响应(服务与直连共用)。
+    `url` 作为条目缺 url/webpage_url 时的兜底(此前引用未定义变量,条目无 url
+    时 NameError——flat 条目几乎总有 url,故一直未暴露;由单测覆盖)。"""
     entries = []
     for idx, e in enumerate(meta.get("entries") or [], start=1):
         # flat 模式下条目可能是 {_type:'url', ...} 或嵌套播放列表,跳过非直接条目
@@ -238,6 +242,11 @@ def export(url, output_dir, cookies="", mode="full"):
     """
     os.makedirs(output_dir, exist_ok=True)
     full = mode != "links"
+    # 说明(C-1):本命令在 manifest 声明 progress+json——外壳对 progress 模式不设
+    # 超时(json 模式 300s 硬超时会误杀大列表全量导出);CLI 内部仍保留
+    # subprocess.run timeout 兜底(links 180s / full 1800s),防单次网络挂死。
+    progress(0, message="正在提取播放列表元数据…" if full else "正在提取链接清单…",
+             output_path=output_dir)
     # links 用 flat(秒级);full 全量逐集详情(慢,超时上限放宽到 30 分钟)
     extra = [] if full else ["--flat-playlist"]
     cmd = base_cmd(extra + ["--no-warnings", "-J", url]) + cookies_args(cookies)
@@ -275,6 +284,7 @@ def export(url, output_dir, cookies="", mode="full"):
         path = _unique_path(os.path.join(output_dir, f"{safe}-链接.txt"))
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(urls) + ("\n" if urls else ""))
+        progress(100, message="链接清单导出完成", output_path=output_dir)
         result({
             "output_dir": output_dir,
             "file": path,
@@ -314,6 +324,7 @@ def export(url, output_dir, cookies="", mode="full"):
     path = _unique_path(os.path.join(output_dir, f"{safe}-清单.csv"))
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         csv.writer(f).writerows(rows)
+    progress(100, message="全量清单导出完成", output_path=output_dir)
     result({
         "output_dir": output_dir,
         "file": path,

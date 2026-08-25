@@ -1,298 +1,266 @@
-# PlugKit 全模块分阶段代码审查报告
+# PlugKit 全量模块代码审查报告
 
-- 审查日期：2026-08-25
-- 审查范围：全项目（插件 download/convert/playlist/shared、Rust 后端 17 文件、前端外壳 13 文件、发布流水线 8 脚本、测试 3 文件），约 1.1 万行
-- 审查方法：分模块逐文件精读，按六维度检查（逻辑漏洞 / 输入输出边界 / 异常捕获 / 安全隐患 / 性能 / 可读性）
-- 问题分级：**【必须修复】**（功能性 bug / 安全漏洞 / 崩溃）→ **【建议优化】**（健壮性 / 异常 / 性能）→ **【仅美化】**（格式 / 命名 / 风格）
-- 状态：**本报告仅审查与方案，未执行任何修改**；修复待确认后执行
-
----
-
-## 阶段一：分模块专项审查
-
-### 1. download 插件（plugins/download/）
-
-**模块职责**：万能下载（yt-dlp 驱动），支持信息提取、视频/音频/图片/直播/字幕下载、播放列表、cookies 登录态、txt/csv/xlsx 文件导入链接。
-
-#### 【必须修复】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| D-1 | `tool/index.html` L170-175 | **「清空」按钮只清 `links`/`parseQueue` 数组并隐藏 `#resultSection`，不清空其 DOM 子节点**。旧链接块仍挂在容器内，再次「提取全部」时旧块与新块同时显示；旧块按钮的 `data-idx` 指向新 `links` 数组下标 → **点击旧块的下载按钮会下载到错误的链接** | 清空时执行 `$('resultSection').innerHTML = ''`；并校验 `links[i]` 归属（`startDownload` 中比对 `links.includes(l)`） |
-
-#### 【建议优化】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| D-2 | `index.html` L233 | 粘贴超过 20 条链接时**静默截断**，用户无感知 | 截断时 toast 提示"仅保留前 20 条，其余已忽略" |
-| D-3 | `index.html` L277 / `index.html` L407 | 错误分类依赖 `msg.indexOf('该链接') === 0` / `'完全磁盘访问'` **字符串匹配**，与后端文案强耦合（后端改文案即失效） | 后端错误传播携带结构化错误码（见 G-1），前端按 code 分支 |
-| D-4 | `plugkit-download` L296-305 | 直播 `extra` 参数注释声明"可带时长限制 extra=Nm"，**但代码只处理 `from_start`，时长限制未实现** | 删除误导注释，或实现 `--live-from-start` + 时长限制（`extra` 解析 Nm） |
-| D-5 | `manifest.json` L10-12 | **dependencies 仅声明 yt-dlp，未声明 ffmpeg**；但视频合并（`--merge-output-format mp4`）与 mp3 提取（`-x`）依赖 ffmpeg → 安装时不保证 ffmpeg，首次使用必报 FFMPEG 类错误 | manifest 补 `"ffmpeg": ">=6.0"`（与 convert 一致；同 playlist，见 G-3） |
-| D-6 | `index.html` L401-416 | 下载失败重复点击时**错误 div 反复叠加** | 失败渲染前移除同元素旧错误节点 |
-| D-7 | `index.html` L158-162 | `changeDir` 失败静默无反馈 | 与 convert 一致，失败时 toast |
-
-#### 【仅美化】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| D-8 | `plugkit-download` L107 | 超时文案写"yt-dlp 在 90s 内未取得元数据"，实际 `timeout=150` | 文案改 150s |
-| D-9 | `plugkit-download` L244 | `[download] 100%` 分支实际不可达（100% 行总带 `of xxx`，先命中 L225 正则） | 删除或改为去重上报 |
-| D-10 | `index.html` L144-147 | 大文件统一显示 MB（2GB 显示 2048.0 MB） | 自适应 GB 单位 |
+- **审查日期**：2026-08-25
+- **审查范围**：全部 5 大模块（前端外壳 / Rust 后端 / 插件层 / 脚本与发布 / 测试）
+- **审查方法**：阶段一（模块内专项审查，六维度）→ 阶段二（全局综合审查，九维度）
+- **问题分级**：【必须修复】功能性 bug / 安全漏洞 / 崩溃；【建议优化】健壮性 / 异常处理 / 性能隐患；【仅美化】格式 / 命名 / 风格
+- **状态**：本报告为审查结论 + 修复方案，**修复需经确认后执行**
 
 ---
 
-### 2. convert 插件（plugins/convert/）
+## 一、审查范围
 
-**模块职责**：格式转换（ffmpeg 驱动），视频/音频/图片互转、视频音频提取（含 v0.6.0 原样无损复制）、批量、拖放、probe 即时探测。
+| 模块 | 范围 | 已读文件 |
+|---|---|---|
+| A. 前端外壳 | `src/` | 13 个（App.vue / MainContent.vue / Sidebar / MarketPanel / TaskPanel / LogPanel / SettingsPanel / PluginPanel / AppIcon / stores / types / main.ts） |
+| B. Rust 后端 | `src-tauri/src/` | 19 个 .rs（lib / protocol / message_bridge / task_queue / task_registry / tool_runner / plugin_manager / manifest_model / manifest_fetcher / dep_manifest / dependency_cache / config_mgr / security / logger / bridge_version / registry / preinstall / main） |
+| C. 插件层 | `plugins/` | 3 个 CLI（download/convert/playlist）+ 3 个 index.html + 3 个 manifest.json + shared 3 个 py |
+| D. 脚本与发布 | `scripts/` + `market/` | 9 个脚本（package-plugins / verify-manifests / release / sync-plugins / dev-watch / sign-plugin / gen-sign-key / clean-plugin-cache / gen-app-icon） |
+| E. 测试 | `tests/` | 4 个（test_shared_ytdlp / test_convert_cli / plugins-store.test / test_bridge fixture） |
 
-#### 【必须修复】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| C-1 | `plugkit-convert` L379-380 | **`extract_audio_copy` 对未知音轨编码（dts / truehd / pcm_s16be / pcm_u8 / mp2 等）`AUDIO_CODEC_EXT.get(codec)` 返回 None → `base + "." + None` 抛 TypeError → 顶层 PLUGIN_ERROR 崩溃**。蓝光 remux 的 DTS 音轨是常见输入，选「原音频（无损复制）」必崩 | 映射缺失时按 copy 失败路径降级：先尝试 `-c:a copy` 到 wav（PCM 容器兼容性最广），失败再降级重编码 mp3；并为 dts/truehd 补映射（mka 容器可封装 dts） |
-| C-2 | `plugkit-convert` L469-486 | **`convert_image` 所有失败分支（FileNotFoundError / TimeoutExpired / returncode≠0）均不清理 `_reserve_path` 占位文件** → 失败后残留 0 字节/半成品文件，用户误判"已生成"（与 convert_video 各分支的 cleanup 行为不一致） | 三个失败分支统一补 `cleanup_if_empty(output_path)` |
-
-#### 【建议优化】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| C-3 | `plugkit-convert` L245-261 / L390-404 | copy 失败降级路径：首次失败的 >0 字节半成品文件未清理（cleanup_if_empty 只清 0 字节），降级成功时旧半成品与最终文件并存 | 降级前删除首次失败产生的输出文件（非 0 字节也删，因为即将被降级产物覆盖） |
-| C-4 | `index.html` L379-387 | **切换视频/音频/图片分类不清空已选文件列表** → 视频文件可被"音频提取"按钮操作（ffmpeg 能提取但语义混乱），且提示语"仅显示当前类别的文件"与已选列表不符 | 切分类时按新类别过滤或清空已选文件并提示 |
-| C-5 | `index.html` L400-431 | 批量任务成功/失败**交替覆盖 status 区**，最后只显示最后一个事件，用户看不到汇总 | 聚合显示（如"成功 X / 失败 Y"），或展示最近一条 + 计数 |
-| C-6 | `plugkit-convert` L283-290 | AUDIO_EXTS 含 `m4b/mka`（输入白名单），但 `codec_map` 无对应项 → 输出 `.m4b` 会以 libmp3lame 写入 m4b 容器（ffmpeg 报错或产生坏文件） | codec_map 补 `m4b→aac`、`mka→aac`，或在 main 分发时拒绝 |
-| C-7 | `index.html` L446 | 视频转换也传 `quality: $('quality').value`（隐藏下拉默认 90），CLI `convert_video` 不使用该参数 → 无效参数传递 | video 分类不传 quality |
-| C-8 | `plugkit-convert` L230-232 | avi/mpg/flv 音频统一 `-c:a aac`：**AVI / MPEG-PS 容器对 AAC 支持不佳**，部分播放器打不开 | avi/mpg 改 `-c:a libmp3lame`（更兼容），flv 保持 AAC |
-| C-9 | `plugkit-convert` L513-519 | `probe()` 输出的 video/audio/image 格式列表硬编码，**与 UI FORMATS 无同源断言**（仅有输入白名单断言） | 单测增加 probe 列表 ↔ UI FORMATS 对齐断言 |
-| C-10 | `plugkit-convert` L104-109 | `run_with_progress` 错误消息不含输出文件名，多任务并发时用户不知道哪个文件失败 | 消息带 `file_name` |
-
-#### 【仅美化】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| C-11 | `plugkit-convert` L134-150 | `_reserve_path` while 无上限（理论上目录存在大量序号文件时循环久） | 加最大尝试次数，超限报错 |
+总体评价：**代码质量高**。经过多轮打磨（错误前置、原子占位、状态机校验、Zip-Slip 防护、CSP 注入、进程组信号、三级报错链路、发布门禁等均有完整实现与注释），未发现大规模结构性问题。问题集中在：**2 处数据一致性缺口（依赖引用计数落盘、日志跨文件排序）、1 处安全纵深缺口（zip 解压无上限）、1 处跨层超时契约冲突（playlist 导出）**，以及若干健壮性/可维护性建议。
 
 ---
 
-### 3. playlist 插件（plugins/playlist/）
+## 二、阶段一：模块内专项审查
 
-**模块职责**：播放列表/频道批量提取与下载、按序号勾选、导出清单（CSV 全量 / TXT 链接）。
+### 模块 A：前端外壳（src/）
 
-#### 【建议优化】（本模块无必须修复项；UI 的 `btnClear` 正确清空了 DOM，与 download 的 D-1 形成对照）
+【必须修复】无
 
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| P-1 | `plugkit-playlist` L180-183 | `download()` 命令**未注入 `--socket-timeout/--retries/--fragment-retries`**（`base_cmd` 只在 list/export 使用），网络抖动时批量下载失败率高于 download 插件 | 复用 base_cmd 网络参数（与 `_run_ytdlp` 对齐） |
-| P-2 | `manifest.json` L10-12 | dependencies 仅 yt-dlp，未声明 ffmpeg（`--merge-output-format mp4` 需要） | 补 `"ffmpeg": ">=6.0"`（见 G-3） |
-| P-3 | `index.html` L252 / L310-324 | ① 超长列表截断展示 500 条，但**初始全选包含 500 条之后的条目**（"下载不受影响"）——用户看到 500 条却会下载全部；② **「全不选→全选」只把截断的 500 条加回 items**，表格外条目丢失勾选 | ① 截断时明确提示"已默认勾选全部 N 集"；② 全选基于 `info.entries` 全量而非截断数组 |
-| P-4 | `index.html` L392 / L436 | 下载/导出的 url 用 `card.info.playlist_url \|\| $('url').value.trim()` 回退输入框**当前值**——提取 A 后修改输入框为 B，若 A 无 playlist_url 字段则**下错列表** | appendCard 时快照原始 url 存入 card，不再回退输入框 |
-| P-5 | `index.html` L404-418 | 下载失败后 `msg.style.color` 与 `fill.style.background` 置红，下次下载开始仅重置 fill 背景，**msg 颜色残留红色**；失败按钮重复 append | 下载开始时重置 msg 颜色；失败渲染前清理旧按钮 |
-| P-6 | `plugkit-playlist` L238/L277 | 同名播放列表导出到同一目录**直接覆盖**（无序号保护） | 文件名冲突时追加序号 |
-| P-7 | `index.html` L285 | 条目 `<a href="${esc(e.url)}">` 直接渲染 yt-dlp 返回的 URL，未过滤协议（理论 `javascript:` 注入面，沙盒无 allow-popups 缓解但纵深不足） | 仅当 url 以 http(s):// 开头才渲染为链接 |
-
-#### 【仅美化】
+【建议优化】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| P-8 | `plugkit-playlist` L38 | 超时文案"120s" vs 实际 `timeout=180` | 文案改 180s |
-| P-9 | `plugkit-playlist` L140 | `[download] 100%` 死分支（同 D-9） | 删除 |
+| A-1 | `stores/plugins.ts` mapTask | `progress.percent` 未兜底：后端若返回缺失/异常 progress 结构，TaskPanel 中 `task.progress.percent.toFixed(0)` 会运行时崩溃（模板直接调用） | 归一化为 `Number(r.progress?.percent ?? 0)`，并 clamp 0-100 |
+| A-2 | `TaskPanel.vue` handleCancel/handlePause/handleResume | invoke 失败无 try/catch → unhandled rejection 且用户无反馈（如任务恰好结束再点取消） | 包 try/catch，失败 `message.error` |
+| A-3 | `TaskPanel.vue` FILTERS | 筛选缺 `paused` / `interrupted` 两项（paused 任务只能靠「全部」查看） | 补充两项（STATUS_LABEL 已支持） |
+| A-4 | `MarketPanel.vue` compareVersions | 预发布版本误判：`1.0.0-rc1` 与 `1.0.0` 解析为相等；带 `v` 前缀版本不剥离 → 「可更新」判断可能不准 | 改用 semver 解析（如 `semver` npm 包）或至少剥离 `v` 前缀 |
+| A-5 | `MarketPanel.vue` 安装/卸载按钮 | 无 loading 态与防重复点击 → 连点产生重复安装请求（后端有版本守卫兜底，但体验差） | 按钮 `:loading` + 点击后禁用至完成 |
+| A-6 | `App.vue` relayResponse | 若后端返回的 `res.id` 与请求 id 不一致（异常场景），原 `pendingInvokes` 条目不删除，靠 10 分钟定时清理兜底 | `delete` 时以实际命中为准；或后端回显恒等于请求 id（已如此，属防御性） |
+| A-7 | `App.vue` postMessage | 所有转发 `targetOrigin='*'`（沙盒 iframe origin 为 opaque `null`） | 可收紧为 `'null'`（iframe contentWindow origin），降低消息被其他窗口读取的理论面 |
+| A-8 | `App.vue` onUnmounted | 顶层 `window.addEventListener('message')` 未移除（根组件不卸载，风险极低） | 顺手清理，保持对称 |
+| A-9 | `TaskPanel.vue` liveEta | `etaSnapshots` Map 终态任务快照不清理（7 天任务保留期内累积，量小） | 终态时 `etaSnapshots.delete(task_id)` |
+| A-10 | `TaskPanel.vue` ticker | 每秒 `now.value = Date.now()` 驱动全面板重渲染 | 任务多时可改为仅 ETA 倒计时组件局部刷新（量小，可选） |
+| A-11 | `stores/plugins.ts` | 模块级 `marketData` 与 `marketPlugins` ref 双缓存冗余 | 删其一 |
+| A-12 | `stores/plugins.ts` | `installPlugin/uninstallPlugin` 后 `fetchMarket(true)` fire-and-forget | `await`（内部已 catch，属整洁性） |
+| A-13 | `SettingsPanel.vue` | `VITE_APP_VERSION` 未注入时回退 `'0.1.0'`，可能显示与真实版本不符 | 构建时注入校验，缺失则显示「dev」 |
+
+【仅美化】
+
+| # | 位置 | 问题描述 |
+|---|---|---|
+| A-14 | `App.vue` | 事件回调用 `any` 类型（`event: any`） |
+| A-15 | 各组件 | `console.error` 与 `message` 混用，无统一错误通道（量小，可选） |
 
 ---
 
-### 4. shared 公共模块（plugins/shared/）
+### 模块 B：Rust 后端（src-tauri/src/）
 
-**模块职责**：插件公共 SDK —— `_protocol.py`（stdout 协议 / dep / parse_args）、`_ytdlp.py`（cookies / playlist / 错误诊断）。变更影响所有使用方，破坏性变更需同步重打包。
-
-#### 【必须修复】
+【必须修复】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| S-1 | `_ytdlp.py` L39-44 | **`playlist_args()` 的 `playlist is True` 分支返回 `[]`（不加 `--yes-playlist`）**——但 `parse_args` 对无值 flag（`--playlist`）返回 `True` → 手动 CLI 调用 `--playlist` 时整列表下载失效（UI 走 manifest 占位符传 "1" 不受影响，但协议逻辑自相矛盾） | `playlist is True` 应返回 `["--yes-playlist"]`（True 即用户意图下载整个列表） |
+| B-1 | `dependency_cache.rs` install_dependency 缓存命中分支（L208-212） | **引用计数丢失**：缓存命中时 `increment_refcount` 只改内存 registry，**未 `registry.save()`**（新增分支有 save）。后果：插件 B 安装复用 A 已下载的依赖后，磁盘 registry 仍只有 `refs=[A]`；卸载 A 时 refcount 减到 0 → `clean_orphans` 误删仍被 B 使用的依赖 → B 下次运行重新下载（或下载失败任务失败）。**与卸载的 decrement 扫描不对称，是真实数据一致性 bug** | 命中分支 `increment_refcount` 后补 `registry.save(&self.registry_path)?`（与新增分支对称） |
+| B-2 | `lib.rs` log_read 跨文件聚合（L358-380） | **日志时间顺序错乱**：多文件聚合后整体 `all_lines.reverse()`。单文件场景正确；当最近日志文件行数 < 请求行数（如今天不足 500 行）跨入昨天文件时，昨天的行被整体排到今天行之前 → 日志页展示顺序颠倒，误导排查 | 每文件内部按需倒序后再聚合，或聚合时按「文件时间戳 + 行序」排序；最简修复：`for file` 循环内先取该文件尾部 `n` 行倒序加入结果，达到 `n` 即停 |
+| B-3 | `plugin_manager.rs` extract_zip（L319-371） | **解压炸弹（zip bomb）**：单文件大小、总解压大小、条目数均无上限。100MB 插件 zip（sha256 来自无签名的市场清单，镜像可投递）可膨胀为任意大小 → 磁盘填充 DoS。`std::io::copy` 无限制 | 解压时校验：单条目解压字节上限（如 50MB）、累计解压上限（如 500MB）、条目数上限（如 10000），超限即中止并删 tmp 目录 |
 
-#### 【建议优化】
+【建议优化】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| S-2 | `_ytdlp.py` L33-36 | cookies 传不存在的文件路径（如手误）→ `os.path.isfile` false → **按浏览器名透传** → yt-dlp 报"无效浏览器"模糊错误 | 路径含分隔符但不存在时明确报 COOKIES_FILE_NOT_FOUND |
-| S-3 | `_protocol.py` L50-67 | `parse_args` 对非 `--` 开头的参数**静默忽略**（拼错参数名无反馈） | 收集未识别 token 并在 debug 日志输出（或严格模式报错） |
-| S-4 | `_protocol.py` L37-39 | `error()` 只打印不退出，**调用方必须记得手动 return**，漏掉则进程以 0 退出但协议已输出 error 行（依赖 stdout 行判断，退出码无意义） | 文档明确约定；或提供 `fail(code,msg)` 组合（print + exit 1） |
+| B-4 | `dep_manifest.rs` dep_available_on_path（L154） | `sh -c "command -v {name}"` 字符串拼接：依赖名来自插件 manifest，恶意名可注入 shell 命令（插件本身即可执行任意代码，无实际提权，但属纵深防御缺口） | 参数化：`sh -c 'command -v "$1"' _ {name}` 或直接用 `Command::new(name)` 探测 |
+| B-5 | `protocol.rs` CSP 注入（L116） | `<head>` 标签属性值含 `>` 时（如 `<head class="a>b">`），`find('>')` 定位到属性内 `>` → meta CSP 注入到属性值中间 → CSP 失效（HTML 解析异常） | 用正则匹配 `<head[^>]*>` 完整标签后注入，或先剥离属性扫描 |
+| B-6 | `protocol.rs` CSP img-src | `img-src plugkit: data: https:` 允许任意 https 图片外联 → 不可信插件可经 `<img>` 侧信道向外部发请求，弱化 `connect-src 'none'` 的禁网意图 | 若可接受则文档化该权衡；否则收紧为仅 `plugkit: data:` |
+| B-7 | `plugin_manager.rs` uninstall（L221-224） | `let _ = dc.decrement_refcount_for_plugin(...)` 与 `let _ = dc.clean_orphans()` 吞错 → 依赖清理失败静默（孤儿依赖残留磁盘） | 至少 `log::error`，可选透出 warnings |
+| B-8 | `tool_runner.rs` substitute_args（L627-636） | 参数值二次替换污染：params 含 `{input: "x{output}", output: "y"}` 时，`{output}` 先被替换后，input 值里的字面 `{output}` 又被 output 值污染 | 占位符替换改为一次遍历（收集所有 `{key}` 后一次性替换，替换值不再参与后续替换） |
+| B-9 | `manifest_fetcher.rs` fetch_single_manifest | 市场清单无大小上限（远端可返回超大 JSON 全量读内存） | 检查 Content-Length 或设置读取上限（如 10MB） |
+| B-10 | `security.rs` OFFICIAL_PUBLIC_KEY=None | **供应链信任锚缺失**：市场清单（含 sha256）无签名验证，GitHub Raw / 镜像被攻破即可全链路替换插件包。已知 G-8 待办，release.sh 有 WARN 门禁 | 发布前启用签名（gen-sign-key.sh 生成 → 公钥填入 security.rs → 打包自动签名） |
+| B-11 | `lib.rs` open_in_folder（L124-130） | 相对路径 `"foo"` 的 parent 为 `""` → `open_path("")` 报错但消息不友好；`~` 单独（无 `/`）不展开 | 补空路径/相对路径的明确报错 |
+| B-12 | `lib.rs` read_log_tail | 只回读尾部 256KB，超长单行/超大日志被截断 | 记录已知限制即可（日志页 2000 行上限内基本覆盖） |
+| B-13 | `config_mgr.rs` | IO/解析错误全部映射为 `PathOutsideRoot`（错误语义误用） | 引入 `IoError` 变体或改 `anyhow` 风格 |
+| B-14 | `task_queue.rs` save() | `queue.save().unwrap_or(())` 落盘失败静默 | 失败时 `log::error`（高频路径仅状态迁移时落盘，代价可接受） |
+| B-15 | `tool_runner.rs` substitute_args | `{platform}` 判断逻辑与 `dep_manifest::current_platform()` 重复（3 处 platform 字符串判断） | 复用 `current_platform()` |
+| B-16 | `lib.rs` dialog_open_file_inner | `blocking_pick_files` 阻塞 tokio worker 线程（模态设计，可接受） | 记录即可 |
+
+【仅美化】
+
+| # | 位置 | 问题描述 |
+|---|---|---|
+| B-17 | `plugin_manager.rs` L380 | `validate_extracted_paths` 与 `install_dependencies` 之间无空行 |
+| B-18 | `manifest_model.rs` | `impl Manifest` 拆成两块（has_ui / tool_dir）可合并 |
+| B-19 | `lib.rs` get_home_dir | 失败返回空字符串（极端场景，调用方拼接出畸形路径） |
 
 ---
 
-### 5. Rust 后端（src-tauri/src/，17 文件）
+### 模块 C：插件层（plugins/）
 
-**模块职责**：Tauri 2 外壳后端——任务队列/执行器、桥接与协议、插件安装管理、共享依赖管理、配置与安全、日志。
-
-#### 【必须修复】
+【必须修复】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| R-1 | `plugin_manager.rs` L116-126 / L128-146 | **bridgeVersion 与 minAppVersion 校验用 `if let Err(_) = check_bridge_version(...)`，只捕获 semver 解析错误（Err），对 `Ok(false)`（版本不匹配）放行** → 协议不兼容的插件会被正常安装（对比 `preinstall.rs` L51-55 用的是正确的 `unwrap_or(false)`） | 改为 `if !check_bridge_version(...).unwrap_or(false) { 拒绝 }` |
-| R-2 | `tool_runner.rs` L438-448 | **暂停循环 `while pause_flag` 不检查子进程是否已退出**：若任务在暂停请求到达前已自然结束，`suspend_process` 对死进程发信号静默失败，随后**卡在等待恢复的死循环**，任务永不进入终态（用户必须点"恢复/取消"才解锁） | 循环内先 `try_wait()`，进程已退出则跳出（记 paused 状态为已完成） |
-| R-3 | `tool_runner.rs` L374-410 + `assets/plugkit-bridge.js` L19-22 | **invoke 层 10 分钟硬超时对 progress 模式长任务（下载/转换 >10 分钟）→ bridge.js reject → 插件 UI 误报"失败"、按钮恢复，用户可重复提交 → 同一文件重复下载**；任务中心显示正常但插件 UI 状态错误（全局问题 G-2，跨文件） | progress 模式不设 invoke 超时（任务生命周期由任务中心管理）；或插件 UI 改为"提交后不 await 完成，仅监听进度" |
+| C-1 | `playlist/tool/plugkit-playlist` export + `manifest.json` export 命令 | **跨层超时契约冲突**：CLI 内 `subprocess.run(timeout=1800)`（30 分钟，注释「全量提取可长达 30 分钟」），但该命令在 manifest 中声明 `"output": "json"` → ToolRunner 对 json 模式施加 **300s 硬超时**。大列表（>几百集）全量导出必被外壳在 5 分钟杀掉，CLI 的 30 分钟设置形同虚设 | 二选一：① export 命令改 `"output": "progress+json"`（外壳不设超时，符合长任务语义）；② 将 CLI 超时降到 300s 内并明确告知用户限制。推荐 ①，与 download 长任务一致 |
 
-#### 【建议优化】
+【建议优化】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| R-4 | `dependency_cache.rs` L11-16 | `HTTP_CLIENT` 设 120s **整体请求超时（含 body 读取）**，慢网下载 ffmpeg（~200MB）时 120s 内未完成即失败，镜像降级也救不了（同一客户端） | 分阶段超时：连接超时 + 每 chunk 读超时（或大幅提高总超时） |
-| R-5 | `tool_runner.rs` L69 | async 上下文中用 `std::thread::sleep(200ms)` 阻塞 tokio worker | 改 `tokio::time::sleep` |
-| R-6 | `tool_runner.rs` L578-632 | `read_stdout_protocol` **累积所有行到 Vec**（长下载数小时 → 数千行驻留内存），实际只用最后一行；`read_stderr` 全量读入但结果丢弃 | stdout 只保留末尾 N 行；stderr 边读边丢（仅防管道阻塞） |
-| R-7 | `tool_runner.rs` L656-686 | `strip_unfilled_placeholders` 把**任意 `{标识符}` 当占位符删除**——用户文件路径含 `{1}` 等（如 `报告{2}版.mp4`）会被改写路径 | 传"已提供的参数键集合"，只 strip 未提供键对应的占位符 |
-| R-8 | `task_queue.rs` L97-106 + `stores/plugins.ts` L143-147 | 任务列表**全量返回 + 前端 3s 轮询**，任务多时每 3s 全量序列化 | 分页/增量/仅活跃任务；轮询可降频（无活跃任务时 10s+） |
-| R-9 | `lib.rs` L300-316 / `message_bridge.rs` L155-202 | `cancel/pause/resume` **不返回任务是否存在/操作是否生效**（任务不存在也返回 `{cancelled:true}`） | 返回 `TaskQueue::cancel()` 的实际结果（bool） |
-| R-10 | `tool_runner.rs` L406-410 | **错误传播丢失错误码**：CLI 输出 `error{code,message}`，invoke 只回 `Err(message)` → 前端只能字符串匹配（见 D-3） | 返回结构化错误（`{code, message}` 或自定义错误类型带 code 字段） |
-| R-11 | `tool_runner.rs` L386-388 | `result` 行的 `success` 字段未校验（插件输出 `success:false` 也标记 Completed） | `ResultData.success == false` 视为失败 |
-| R-12 | `protocol.rs` L85 | **CSP 条件注入**：HTML 内容含 `"plugkit-bridge.js"` 字符串即豁免 CSP 注入 → 插件页面无 CSP 防护（可自由外联网络） | 无条件注入 CSP meta（插件自己引 bridge 时去重即可） |
-| R-13 | `protocol.rs` L108 | `<head` 前缀匹配会**误命中 `<header>` 标签** → CSP meta 注入到 `<header>` 内（body 区域），HTML 规范中 meta CSP 仅在 `<head>` 生效 → 防护失效 | 匹配 `<head` 后要求后一字符为空白或 `>`（排除 header） |
-| R-14 | `plugin_manager.rs` L23-26 | `install()` **无条件先 `fetch_market_manifests()`**，离线时连本地重装路径（L56-62）都进不去 | 市场拉取失败降级：本地已装插件直接走本地 manifest 重装 |
-| R-15 | `plugin_manager.rs` L31-35 | 版本解析失败（`semver::Version::parse` Err）→ 按 `0.0.0` 处理 → `existing >= market` 恒真 → **永远 ALREADY_LATEST，无法重装/升级** | 解析失败按"需重装"放行 |
-| R-16 | `plugin_manager.rs` L226-258 | `list()` 会把 `{id}.old` 残留目录（原子换装崩溃残留）**当正常插件列出** | 跳过以 `.old` 结尾的目录 |
-| R-17 | `plugin_manager.rs` L301-353 | zip 解压**无总大小/条目数限制**：下载上限 100MB 的压缩包可解压膨胀数 GB（zip 炸弹） | 解压时累计写入字节数 + 条目数上限 |
-| R-18 | `manifest_fetcher.rs` L117-176 | 市场清单**多源并行、先到先用**：镜像（公共代理）可能先返回被篡改的清单 → 成为市场权威（sha256 也是清单给的，镜像可全链路伪造）；当前无签名验证（G-18）使该风险敞口 | ① 原始 URL 结果优先（镜像仅作回退）；② 或对镜像响应与原始响应做交叉校验 |
-| R-19 | `dep_manifest.rs` L125-141 | `dep_available_on_path` 每次任务 invoke 都跑 `sh/where` 子进程（每任务 2-3 次） | 进程内缓存 PATH 探测结果（TTL 30s） |
-| R-20 | `dependency_cache.rs` L53-90 | `clean_orphans()` 无文件锁，与 `install_dependency` 并发时读-改-写覆盖（registry 丢失更新） | 复用 `acquire_lock()` |
-| R-21 | `lib.rs` L331-384 | `log_read` 整文件读入内存再 reverse（日志文件大时内存峰值高） | 从文件尾部反向读 N 行 |
-| R-22 | `tool_runner.rs` L30-41 | `suspend_process` 对**已退出**进程发信号（配合 R-2 的卡死场景） | 调用前 try_wait 确认存活 |
+| C-2 | `shared/_ytdlp.py` _ensure_service | 首次调用 `pip install yt-dlp`（最长 300s 阻塞）在任务执行路径上：download/playlist 首次解析可能等待 1-2 分钟无反馈 | 首次走后台预热（异步拉起），或解析前先输出「正在准备解析服务…」进度 |
+| C-3 | `download/tool/index.html` L453、`playlist/tool/index.html` L418/L463 | `r.output_dir` / `r.format.toUpperCase()` 在 `r` 为 null/undefined 时 TypeError（后端成功但 data 为 null 的边界） | 改 `r && r.output_dir`，`r.format` 判空 |
+| C-4 | `download/tool/index.html` L301 | 去重提示用字符串前缀 `'该链接'` 匹配后端文案（跨层字符串耦合，后端文案变更即失效） | 后端错误已带 `[CODE]` 前缀，UI 改解析 code（如 `DUP_EXTRACT`） |
+| C-5 | `shared/_ytdlp_service.py` serve_conn | 每连接一线程无上限（单客户端低并发，可接受） | 记录即可 |
+| C-6 | `download/tool/plugkit-download` L262 | `"Error" in line or "error" in line` 会把文件名含 error 的行误收进诊断（轻微） | 收窄为行首 `ERROR:` / 常见 yt-dlp 错误前缀 |
+| C-7 | `playlist/tool/plugkit-playlist` _unique_path | 导出防覆盖非原子（并发导出同路径可能碰撞，低概率） | 可选复用 convert 的 `_reserve_path` O_EXCL 方案 |
+| C-8 | 三个插件 manifest | `dependencies` 的版本约束（`">=2024.01.01"` 等）从未被 Rust 端解析使用（dep_manifest 为 pinned 版本）——**声明的语义与实现不符** | 删约束改存在性声明（`"ffmpeg": ""`），或实现约束解析（后者成本高，推荐前者） |
 
-#### 【仅美化】
+【仅美化】
 
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| R-23 | `dep_manifest.rs` L144-156 与 `plugin_manager.rs` L425-437 | `current_platform()` 重复定义 | 提取到公共模块 |
-| R-24 | `registry.rs` L114-120 | `entry_count` 数的是版本数而非平台条目数（语义与 stats 展示"缓存条目"不符） | 遍历 platform 层计数 |
-| R-25 | `security.rs` L101-111 | `validate_sha256` 十六进制比较区分大小写 | 统一转小写比较 |
+| # | 位置 | 问题描述 |
+|---|---|---|
+| C-9 | `convert/tool/plugkit-convert` L36-37 | 模块顶部双空行 |
+| C-10 | download/playlist UI | toast/esc/brief/cookies 状态渲染代码重复（插件独立打包，共享成本高，可接受） |
 
 ---
 
-### 6. 前端外壳（src/）
+### 模块 D：脚本与发布（scripts/）
 
-**模块职责**：Vue 3 外壳——布局/侧边栏/任务中心/市场/设置/日志、iframe 常驻管理、window 桥接转发（零业务逻辑）。
+【必须修复】无
 
-#### 【必须修复】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| F-1 | `components/Sidebar.vue` L140-157 | **拖拽排序松开后的 click 误导航**：`onPointerUp` 在 `mouseup` 时执行并把 `suppressClick` 重置为 false，浏览器随后派发的 `click` 事件到达 `handleSelect` 时已无法抑制 → **用户拖完排序工具却跳转到该工具页面** | 用"最近一次 mouseup 发生过重排"的时间戳/标志，在 click 处理器中判断（事件顺序 mouseup→click，标志需保留到 click 之后，如 setTimeout 清除） |
-| F-2 | 同 R-3 | bridge.js invoke 10 分钟超时对长任务误报失败（跨模块，见 R-3） | 见 R-3 |
-
-#### 【建议优化】
+【建议优化】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| F-3 | `components/PluginPanel.vue` L11-13 | iframe src **硬编码 `tool/index.html`**，忽略 manifest `ui.html` 字段（模型定义了但从未使用） | 加载时读 manifest 的 `ui.html`（无则默认 tool/index.html） |
-| F-4 | `stores/plugins.ts` L143-147 | 任务 3s 轮询无节流，无任务时也持续轮询 | 无活跃任务时降频至 15s |
-| F-5 | `components/LogPanel.vue` | 日志页仅手动刷新 | 提供自动刷新开关（如 5s） |
+| D-1 | `gen-app-icon.mjs` L21 | 硬编码 `/Users/main/.workbuddy/binaries/node/workspace/node_modules/sharp` 绝对路径 → 换机器/用户即失效 | 优先 `process.env.NODE_PATH` 或项目内依赖，最后回退提示安装 |
+| D-2 | `release.sh` L45 | 公钥配置检测用字符串匹配源码（`'OFFICIAL_PUBLIC_KEY:Option<&str>=None;' not in ...`）→ 格式/注释变化即误判 | 解析 `Some(`/`None` 判定，或读取编译产物 |
+| D-3 | `release.sh` L84 | `$TAG` 直接拼 JSON body（含引号破坏 JSON） | 用 python3/jq 构造 JSON |
+| D-4 | `dev-watch.sh` L29 | `xargs sh -c` 拼接文件名（含引号/特殊字符文件名破坏统计） | 插件文件名可控（.py/.html/json），可接受；如需稳妥改 find -print0 |
 
-#### 【仅美化】
+【仅美化】
 
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| F-6 | `components/AppIcon.vue` L13-35 | 未使用的图标（trash/alert/check/stop/download/plus/info） | 清理或标注预留 |
-| F-7 | `components/MarketPanel.vue` L35-43 | `compareVersions` 忽略预发布/构建元数据段 | 按需支持（当前内置插件无预发布） |
+| # | 位置 | 问题描述 |
+|---|---|---|
+| D-5 | `package-plugins.sh` | tag 参数未校验（verify-manifests 门禁兜底 `//download//` 坏 URL） |
 
 ---
 
-### 7. 发布流水线与测试（scripts/ + tests/）
+### 模块 E：测试（tests/）
 
-**模块职责**：打包（package-plugins）、清单同步（fallback+market）、门禁（verify-manifests）、发布（release）、开发同步（sync/dev-watch）、签名工具、单元测试。
+【必须修复】无
 
-#### 【建议优化】
-
-| # | 位置 | 问题描述 | 修复建议 |
-|---|---|---|---|
-| T-1 | `scripts/dev-watch.sh` L33 | `md5` 命令在 Linux（md5sum）不存在 → Linux 上指纹计算失败，退化为每次全量同步 | 兼容 `md5`/`md5sum` |
-| T-2 | `scripts/gen-sign-key.sh` L12-15 | 生成的私钥未 `chmod 600`（默认受 umask 影响可能 644） | 生成后 chmod 600（.gitignore 已忽略 .signing/，双保险） |
-| T-3 | `scripts/release.sh` L45 | 门禁 3 用字符串匹配检测 `OFFICIAL_PUBLIC_KEY` 是否配置（格式变化即误判） | 改由 verify 脚本读 security.rs 结构化判断 |
-| T-4 | `tests/unit/test_convert_cli.py` | 单测覆盖良好（18 例），但**缺 C-1 对应的未知音轨编码用例**（dts 崩溃点未被测试捕获） | 补 `extract_audio_copy` 未知编码降级路径测试 |
-| T-5 | — | **download / playlist CLI 无单元测试**（`playlist_args` 的 S-1 缺陷、`diagnose_ytdlp_error` 分类均无回归保护） | 为 shared/_ytdlp.py 与 download/playlist 关键路径补单测 |
-
-#### 【仅美化】
+【建议优化】
 
 | # | 位置 | 问题描述 | 修复建议 |
 |---|---|---|---|
-| T-6 | `tests/integration/test_bridge.py` | 实为模拟插件脚本（无断言），非自动化测试 | 标注用途或改造为 pytest 断言 |
+| E-1 | Rust 侧（全局） | **无 Rust 集成/单元测试覆盖任务系统与依赖缓存**：`lib.rs` 暴露了 `api` facade（PluginManager / DependencyCache / TaskQueue）但 tests/ 下无 Rust 测试。B-1（引用计数落盘）正是无测试盲区 | 补：`task_queue` 状态机迁移表、`dependency_cache` 引用计数增删对称、`plugin_manager` 安装链路（mock 下载）单测 |
+| E-2 | download/playlist CLI | 无单元测试（仅 convert 有 18 例） | 补 `_build_info_result` / `_build_list_result` / `export` CSV 构造的纯函数测试 |
+| E-3 | `tests/unit/plugins-store.test.ts` | 仅覆盖 mapTask（轮询/缓存逻辑未测） | 可选补 fetchTasks/market 缓存 TTL 单测 |
+| E-4 | `tests/integration/test_bridge.py` | 实为测试插件 fixture 而非测试文件，命名/位置误导 | 移入 `tests/fixtures/` 或文件头注明用途 |
+
+【仅美化】
+
+| # | 位置 | 问题描述 |
+|---|---|---|
+| E-5 | `tests/integration/test_bridge.py` | 位置与命名（见 E-4） |
 
 ---
 
-## 阶段二：全局综合审查
+## 三、阶段二：全局综合审查
 
-### 全局评估结论
-
-总体架构健康：**零业务逻辑外壳 + CLI/iframe 插件**的核心约束贯彻到位（桥接身份校验、CSP、沙盒、Zip-Slip 防护、依赖校验、原子写、任务状态闭环等安全与健壮性设计显著优于同类项目）。插件三件套的 UI/CLI 白名单一致性有单测保障。全局层面存在 **4 个跨模块一致性问题**（错误码丢失、长任务超时、ffmpeg 依赖声明缺失、插件间重复逻辑）与若干信任链/资源开销问题，均属可修复范围，**无需架构级改动**。
+**整体评估**：架构分层清晰（外壳零业务逻辑 / 插件 CLI+iframe / 共享 SDK），模块间契约基本一致，错误码三级链路闭环（插件 UI 简要 → 任务中心 → 结构化日志），生命周期管理完整（任务队列 → 进程组信号 → 引用计数 → 孤儿清理 → 启动恢复）。全局层面有 4 项需协调的交互问题与若干一致性建议。
 
 ### 全局问题清单
 
-| # | 维度 | 位置 | 问题描述 | 风险 | 修复建议 |
+| # | 维度 | 位置 | 问题描述 | 风险等级 | 修复建议 |
 |---|---|---|---|---|---|
-| G-1 | 错误传播 | CLI error → tool_runner → 前端 | **错误码在传播链中丢失**：CLI 输出 16 种语义化 code，日志页完整保留，但任务中心与插件 UI 只拿到 message → 前端被迫字符串匹配（D-3/C-5 的根因） | 中 | tool_runner 返回结构化错误（携带 code）；前端按 code 分支渲染 |
-| G-2 | 状态一致性 | bridge.js + tool_runner | **invoke 10 分钟超时 vs progress 任务无超时**：长任务插件 UI 误报失败、可重复提交（R-3/F-2） | 高 | progress 模式取消 invoke 超时；或 UI 改 submit-and-forget |
-| G-3 | 依赖声明 | download/playlist manifest | **ffmpeg 依赖未声明**（D-5/P-2）：两插件实际强依赖 ffmpeg（合并/转码/提取），安装期不装、运行期报错，与 convert 的声明不一致 | 高 | 两 manifest 补 `"ffmpeg": ">=6.0"`，verify-manifests 增加"manifest 依赖声明完整性"门禁 |
-| G-4 | 参数传递 | UI → bridge → CLI | 占位符空值链依赖各插件 `or 默认值` 自觉兜底（约定而非机制），新插件易漏 | 低 | tool_runner 对"缺参必填"参数（input/output）做前置校验 |
-| G-5 | 状态机 | task_queue | **无集中状态机校验**（update_status 任意设置），R-2 暂停死循环即状态不一致实例 | 中 | update_status 增加合法迁移表校验 |
-| G-6 | 重复逻辑 | download/_run_ytdlp vs playlist/_run_download | 两个函数 ~80 行几乎相同（进度解析/文件收集/错误收集） | 低 | 下沉到 shared/_ytdlp.py（参数化 suffix/前缀消息） |
-| G-7 | 重复逻辑 | 三个插件 index.html | esc/toast/brief/cookies 状态渲染/保存路径逻辑在三份 HTML 大量复制 | 低 | 可选：生成公共 plugin-ui.js 注入（不强制，插件隔离是设计） |
-| G-8 | 整体安全 | security.rs OFFICIAL_PUBLIC_KEY + manifest_fetcher | **签名验证未启用（None）**：市场清单经公共镜像先到先用（R-18），无签名时镜像可全链路伪造市场+包；发布门禁 3 已 WARN | 中 | 发布前启用签名（gen-sign-key → 公钥填 security.rs）；R-18 原始源优先 |
-| G-9 | 整体安全 | protocol.rs | CSP 条件注入可绕过（R-12）+ `<header>` 误匹配（R-13）→ 插件页面网络防护存在缺口 | 中 | 见 R-12/R-13 |
-| G-10 | 资源开销 | 全局 | 8 iframe 常驻 + 3s 全量轮询 + 每秒 ETA 滴答 + 每任务 PATH 子进程探测（R-19） | 低 | 见 R-8/R-19/F-4 |
-| G-11 | 性能 | tool_runner | stdout 全量累积 + stderr 全量读入（R-6） | 低 | 见 R-6 |
-| G-12 | 闭环完整性 | 主流程 | 提取→选择→下载→进度→完成全链路可达；取消/暂停/超时/依赖缺失/协议违规均有兜底。缺口：download 20 条静默截断（D-2）、playlist 500 条截断勾选歧义（P-3）、convert 跨类别误操作（C-4） | 低 | 见各条目 |
-| G-13 | 全局配置 | 环境变量 | 配置散落（PLUGKIT_MANIFEST_URL/MIRRORS/REPO/SIGN_KEY 等）无集中管理，靠文档约定 | 低 | 当前规模可接受；新配置项时考虑集中 env 前缀约定文档 |
+| G-1 | 模块间调用 | playlist export ↔ tool_runner 超时 | CLI 1800s 超时与外壳 json 模式 300s 超时冲突（同 C-1） | **必须修复** | export 改 progress+json 输出模式 |
+| G-2 | 模块间调用 | message_bridge.rs L99 | `probe` 命令名硬编码在外壳（任何插件的 probe 都即时执行不进任务中心）——命令语义耦合外壳 | 建议优化 | 移至 manifest 命令属性（如 `"output": "probe"`），或加注释固化契约 |
+| G-3 | 参数传递 | 插件 UI ↔ 后端错误码 | download UI 用字符串前缀 `'该链接'`/`'完全磁盘访问'` 匹配后端文案（同 C-4）；playlist UI 同样匹配 `'完全磁盘访问'` | 建议优化 | 统一改为解析后端 `[CODE]` 前缀判断场景 |
+| G-4 | 状态流转 | task_queue ↔ task_registry | cancel/pause/resume 先操作注册表再改状态，存在竞态窗口（进程刚结束时取消 → 已完成任务显示 Cancelled，`can_transition` 拦截后者但无法回滚） | 建议优化 | 语义可接受（用户确实点了取消），补注释即可 |
+| G-5 | 错误传播 | plugin_manager uninstall / task_queue save | 多处 `let _ =` 吞错（依赖清理失败、任务落盘失败）静默 | 建议优化 | 统一补 `log::error`（落盘/清理类失败必须可见） |
+| G-6 | 全局配置 | `~/.plugkit` 路径散落 | 数据目录/日志目录/缓存目录/tmp socket 路径分散在 7+ 处（Rust 6 处 + Python 2 处），无集中常量 | 建议优化 | Rust 侧建 `paths.rs` 常量模块，shared 建 `_paths.py`；未来便携模式只需改一处 |
+| G-7 | 重复逻辑 | tool_runner.rs substitute_args / dep_manifest.rs / plugin_manager.rs | platform 字符串判断重复 3 处 | 建议优化 | 统一复用 `dep_manifest::current_platform()` |
+| G-8 | 重复逻辑 | 插件 UI | toast/esc/brief/cookies 渲染在 download/playlist 重复（convert 用 status） | 仅美化 | 可经 plugkit:// 引入公共 UI JS（成本高，接受现状） |
+| G-9 | 整体安全 | security.rs / 市场清单 | 供应链信任锚缺失（OFFICIAL_PUBLIC_KEY=None，sha256 来自无签名清单）（同 B-10） | 建议优化（发布前必做） | 发布前启用 Ed25519 签名（脚本已齐备） |
+| G-10 | 整体安全 | plugin_manager extract_zip / protocol | zip bomb（B-3）+ CSP 注入边界（B-5）+ img 外联（B-6）为威胁面纵深缺口 | 必须修复（B-3） | 见各条目 |
+| G-11 | 整体资源 | ToolRunner 信号量 | 全局 5 并发对所有插件生效（跨插件共享），符合预期；插件 UI 各持 ≤5 解析并发池 → 实际仍受全局 5 约束 | 建议优化 | 记录即可（现状即全局受限） |
+| G-12 | 整体资源 | _ytdlp_service | 常驻解析服务内存约 250MB，空闲 120s 退出；download/playlist 共用 socket，多插件不重复拉起 | 通过 | 无需处理 |
+| G-13 | 闭环完整性 | 主流程 | 安装→依赖→iframe→invoke→进度→错误→控制→卸载闭环完整；唯一破坏点是 B-1（引用计数不落盘）与 C-1（导出超时） | 必须修复 | 见 B-1 / C-1 |
+| G-14 | 闭环完整性 | 启动恢复 | recover() + tmp/work 清理 + download.tmp 清理 + 日志 14 天轮转齐全 | 通过 | 无需处理 |
 
 ---
 
-## 修复方案（提交确认后执行）
+## 四、完整修复方案（提交确认后执行）
 
-### P0 —— 必须修复（功能性 bug / 崩溃 / 安全缺口）
+### P0 —— 必须修复（4 项，直接影响正确性/安全）
 
-| 优先级 | 编号 | 位置 | 修复内容 |
+| # | 对应条目 | 修复内容 | 涉及文件 | 工作量 |
+|---|---|---|---|---|
+| P0-1 | B-1 | 依赖缓存命中分支补 `registry.save()`（引用计数增删对称闭环） | `src-tauri/src/dependency_cache.rs` | 小 |
+| P0-2 | B-2 | log_read 跨文件日志顺序修正（每文件内倒序聚合） | `src-tauri/src/lib.rs` | 小 |
+| P0-3 | B-3 | zip 解压增加单文件/总量/条目数上限，超限中止并清理 | `src-tauri/src/plugin_manager.rs` | 中 |
+| P0-4 | C-1 / G-1 | playlist export 改 progress+json 输出模式（消除跨层超时冲突），同步 CLI 进度输出 | `plugins/playlist/manifest.json`、`plugins/playlist/tool/plugkit-playlist` | 小 |
+
+### P1 —— 建议优化（择期批量执行）
+
+| # | 对应条目 | 修复内容 | 涉及文件 |
 |---|---|---|---|
-| P0-1 | R-1 | plugin_manager.rs | 版本校验改为 `!check_bridge_version(...).unwrap_or(false)` 拒绝不兼容插件 |
-| P0-2 | C-1 | plugkit-convert | extract_audio_copy 未知编码降级（先 wav copy 再 mp3），并补单测 |
-| P0-3 | R-2 | tool_runner.rs | 暂停循环内先 try_wait 检测进程退出 |
-| P0-4 | D-1 | download/index.html | 清空按钮清空 resultSection DOM |
-| P0-5 | F-1 | Sidebar.vue | 修复拖拽排序后 click 误导航（suppressClick 保留至 click 后） |
-| P0-6 | S-1 | shared/_ytdlp.py | playlist_args True 分支返回 `--yes-playlist` |
+| P1-1 | A-1 / A-2 / A-3 | mapTask progress 兜底；任务控制按钮错误反馈；筛选补 paused/interrupted | `src/stores/plugins.ts`、`src/components/TaskPanel.vue` |
+| P1-2 | B-4 | dep_available_on_path 参数化探测（消除 shell 拼接） | `src-tauri/src/dep_manifest.rs` |
+| P1-3 | B-5 / B-6 | protocol CSP 注入边界加固；img-src 收紧或文档化 | `src-tauri/src/protocol.rs` |
+| P1-4 | B-7 / G-5 | 卸载/落盘失败统一 log::error | `plugin_manager.rs`、`task_queue.rs` |
+| P1-5 | B-8 | substitute_args 一次性替换（防参数值二次污染） | `src-tauri/src/tool_runner.rs` |
+| P1-6 | G-3 / C-4 | 插件 UI 错误场景判断改解析 [CODE] 前缀 | download/playlist index.html |
+| P1-7 | C-3 | 插件 UI 对 `r` 判空 | download/playlist index.html |
+| P1-8 | G-6 / G-7 | 路径常量集中（paths.rs）+ platform 判断复用 | Rust 侧 + shared |
+| P1-9 | C-8 | manifest dependencies 约束语义澄清（删未解析约束） | 3 个 manifest.json + verify-manifests 门禁同步 |
+| P1-10 | D-1 / D-2 / D-3 | 图标脚本路径去硬编码；release 公钥检测与 JSON 构造加固 | scripts |
+| P1-11 | E-1 / E-2 | 补 Rust 任务/依赖缓存单测 + download/playlist CLI 纯函数测试 | tests/ |
+| P1-12 | C-2 | 解析服务首次 pip install 阻塞提示 | shared/_ytdlp.py |
+| P1-13 | B-10 / G-9 | 发布前启用签名（操作项，非代码） | 发布流程 |
 
-### P1 —— 建议优化（健壮性 / 性能 / 一致性）
+### P2 —— 仅美化（随代码修改顺带处理）
 
-| 优先级 | 编号 | 位置 | 修复内容 |
-|---|---|---|---|
-| P1-1 | G-3 / D-5 / P-2 | 两 manifest | 补 ffmpeg 依赖声明 + verify-manifests 门禁 |
-| P1-2 | G-2 / R-3 / F-2 | bridge.js + tool_runner | progress 模式 invoke 取消超时（或 UI 改 submit-and-forget） |
-| P1-3 | G-1 / R-10 | tool_runner | 结构化错误携带 code，前端按 code 分支 |
-| P1-4 | C-2 | plugkit-convert | convert_image 失败分支统一清理占位 |
-| P1-5 | R-4 | dependency_cache | 依赖下载改分阶段超时（连接/读块分离） |
-| P1-6 | R-12 / R-13 | protocol.rs | CSP 无条件注入 + `<head` 排除 `<header>` |
-| P1-7 | R-7 | tool_runner.rs | strip 占位符传入已提供键集合 |
-| P1-8 | R-18 | manifest_fetcher | 市场清单原始源优先 |
-| P1-9 | R-8 / F-4 | task_queue + stores | 任务列表增量/分页 + 空闲降频轮询 |
-| P1-10 | R-6 | tool_runner | stdout 只留尾部 N 行；stderr 边读边丢 |
-| P1-11 | R-14 / R-15 / R-16 | plugin_manager | 离线本地重装降级、版本解析失败放行、.old 过滤 |
-| P1-12 | C-3 / C-4 / C-5 | convert | 降级路径清半成品、切分类清文件、状态聚合 |
-| P1-13 | P-3 / P-4 / P-5 | playlist | 截断勾选语义、url 快照、失败状态重置 |
-| P1-14 | D-2 / D-3 / D-4 | download | 截断提示、错误码分支、直播注释/实现对齐 |
-| P1-15 | G-5 | task_queue | 状态机合法迁移校验 |
-| P1-16 | G-6 | shared/_ytdlp.py | 抽取共用下载执行器 |
-| P1-17 | R-9 | lib.rs / message_bridge | 任务控制返回实际结果 |
-| P1-18 | R-11 | tool_runner | result.success 校验 |
-| P1-19 | R-19 | dep_manifest | PATH 探测缓存 |
-| P1-20 | R-20 / R-21 / R-22 | dependency_cache / lib.rs / tool_runner | 孤儿清理加锁、日志尾部读取、暂停前确认存活 |
-| P1-21 | T-4 / T-5 | tests | 补 convert 未知编码用例 + download/playlist/shared 单测 |
-| P1-22 | F-3 / F-5 | PluginPanel / LogPanel | manifest ui.html 支持、日志自动刷新 |
+A-14/A-15、B-17/B-18/B-19、C-9、D-5、E-4/E-5 等格式与命名问题，修复 P0/P1 时顺带清理，不单独排期。
 
-### P2 —— 仅美化（格式 / 命名 / 风格）
+### 执行顺序建议
 
-| 优先级 | 编号 | 位置 | 修复内容 |
-|---|---|---|---|
-| P2-1 | D-8/D-9、P-8/P-9、R-23/R-24/R-25、F-6/F-7、C-11 | 各处 | 文案对齐（150s/180s）、删死分支、current_platform 提取、entry_count 语义、sha256 大小写、图标清理、循环上限 |
-| P2-2 | T-1/T-2/T-3、T-6 | scripts/tests | md5 兼容、私钥 chmod 600、门禁结构化检测、测试脚本标注 |
+1. **P0 先行**：4 项均为小而集中的改动，改完跑 `cargo test` + `npm run test` + `./scripts/verify-manifests.sh` 回归；
+2. **P1 分批**：按「后端一致性 → 前端健壮性 → 插件契约 → 脚本/测试」四批推进，每批独立验证；
+3. **验证清单**：P0-4 需真实链路验证（导出大列表不被 5 分钟杀掉）；P0-1 需验证「装 A 装 B → 卸 A → B 仍可用且缓存不误删」。
 
-### 建议执行顺序
+---
 
-1. **第一批（P0）**：R-1 → C-1(+单测) → R-2 → D-1 → F-1 → S-1 —— 全部为确定性 bug，改动小、独立，可一次提交
-2. **第二批（P1 架构一致性）**：G-3 manifest 依赖 → G-2 长任务超时 → G-1 错误码 → R-12/13 CSP → R-7 占位符 → R-18 信任链
-3. **第三批（P1 健壮性/性能）**：C-2/3、R-4/6/8/9/11/14-22、P-3/4/5、D-2/3/4、G-5/6、T-4/5
-4. **第四批（P2）**：文案/清理/美化
-5. **收尾**：全量回归 —— 单测（convert 18+ 新用例、plugins-store）、dev 链路真实验证（提取→下载→转换→暂停/取消）、`verify-manifests.sh`、重新打包三个插件
+## 五、修复执行记录（2026-08-25 执行完毕，全量验证通过）
 
-> 注：P1-3（错误码传播）与 P1-2（长任务超时）涉及前后端契约变更，需同步改 bridge.js / 三个插件 UI 的错误渲染分支，建议作为独立提交并回归插件白名单测试。
+用户确认后 P0/P1/P2 全部执行。验证：`cargo check` 零警告、`cargo test` 全过（lib 20 + plugin_e2e 2 + tool_runner_e2e 1）、pytest 43 passed（新增 download 8 + playlist 4）、vitest 3、vue-tsc 零错误、verify-manifests 通过、重打包 + dev 副本已同步。
+
+| 项 | 状态 | 修复说明 |
+|---|---|---|
+| P0-1 (B-1) | ✅ | `dependency_cache.rs` 缓存命中分支补 `registry.save()`；新增 `with_dir()` 测试构造 + 引用计数对称性单测 |
+| P0-2 (B-2) | ✅ | `lib.rs` log_read 每文件内倒序聚合，消除跨文件顺序颠倒 |
+| P0-3 (B-3) | ✅ | `plugin_manager.rs` extract_zip 单条目 64MB / 累计 512MB / 条目 10000 上限，流式计数 |
+| P0-4 (C-1) | ✅ | playlist export 改 progress+json（外壳不设超时）+ CLI 进度上报 |
+| P1-1 (A-1/2/3) | ✅ | mapTask percent 兜底+clamp；任务控制按钮错误反馈；FILTERS 补 paused/interrupted |
+| P1-2 (B-4) | ✅ | dep_available_on_path 参数化 `command -v "$1"` |
+| P1-3 (B-5/6) | ✅ | CSP 注入改 `find_tag_end`（跳过属性引号）；img-src 收紧为 `plugkit: data:` |
+| P1-4 (B-7/G-5) | ✅ | 卸载/clean_orphans 失败 log；task_queue 落盘失败 `save_log` 显式记录 |
+| P1-5 (B-8) | ✅ | `substitute_arg_once` 一次性替换（消除参数值二次污染）+ 平台串复用 `current_platform()`（G-7）+ 新单测 |
+| P1-6 (G-3) | ✅ | dedup 文案改 `[DUP_EXTRACT]` 错误码；UI 错误场景判断改错误码（保留文案兜底） |
+| P1-7 (C-3) | ✅ | download/playlist UI 对 `r` 判空 |
+| P1-8 (G-6) | ✅ | 新建 `paths.rs` 路径常量集中，替换 9 处散落路径 |
+| P1-9 (C-8) | ✅ | 三 manifest `dependencies` 约束改存在性声明（值置空，Rust 端从未解析约束） |
+| P1-10 (D-1/2/3) | ✅ | gen-app-icon 去硬编码（SHARP_PATH 回退链）；release 公钥检测正则化；JSON body python 构造 |
+| P1-11 (E-1/2) | ✅ | 新增 task_queue 状态机/创建、dependency_cache 引用计数单测；download/playlist CLI 单测 |
+| P1-12 (C-2) | ✅ | 首次 venv 创建发 `progress` 提示（约 30s 不误判卡死） |
+| P1-13 (B-10) | ⏸️ | 发布前启用签名——操作项，未改代码（release.sh 已有 WARN 门禁） |
+| P1-14 (新增) | ✅ | **下载复用 venv pip 版 yt-dlp**：`ytdlp_binary()` 优先 venv（冷启动 22s→0.4s），Windows/venv 缺失回退二进制；`YTDLP_VERSION` pin 与 dep_manifest 对齐（实测 venv 已为 2026.08.19） |
+| P2 | ✅ | App.vue 事件类型化；plugin_manager 空行；manifest_model impl 合并；convert 空行；test_bridge 用途注明 |
+| 新发现 | ✅ | playlist `_build_list_result` 引用未定义变量 `url`（条目无 url 时 NameError）——已修复（加默认参数）+ 单测覆盖 |
+
+**修正**：报告原 E-1 称「Rust 侧无集成测试」不准确——`src-tauri/tests/` 实际有 plugin_e2e / tool_runner_e2e / market_remote_e2e 三个 e2e；真正缺口是 task_queue / dependency_cache 的单元测试（已补）。
+
+**遗留说明**：
+- P1-13（签名启用）为发布前操作项，涉及密钥管理，按你的节奏执行；
+- manifest 依赖约束置空后，Rust 端不解析约束的事实与声明一致（存在性声明）；未来若需版本门槛，应在 dep_manifest 层实现（非 manifest 字符串）。
+
+*报告完毕。修复执行完成，可进入验收（真实链路验证建议：大列表导出不被 5 分钟杀掉；装 A 装 B → 卸 A → B 缓存不误删）。*

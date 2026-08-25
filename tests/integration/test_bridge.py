@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-测试插件 - 用于验证 bridge 链路
+测试插件 fixture(非 pytest 测试)——用于手动验证 bridge 链路。
+位置在 tests/integration/ 下但无 test_ 函数,pytest 收集时不会执行断言;
+它模拟一个输出 progress→result 协议流的插件 CLI,供 bridge 集成调试使用。
+(E-4/E-5:原位置/命名易误导为测试文件,特此注明用途。)
 """
 import sys
 import json

@@ -22,8 +22,9 @@ fn extract_url(params: &serde_json::Value) -> Option<String> {
 }
 
 /// 重复提取时的提示文案(去重仅命中活跃任务;终态任务允许重新解析)。
+/// 带结构化错误码(G-3):插件 UI 据此判断「重复提取」场景,不再脆弱地字符串匹配文案。
 fn dedup_message() -> String {
-    "该链接正在解析中，请勿重复提取".to_string()
+    "[DUP_EXTRACT] 该链接正在解析中，请勿重复提取".to_string()
 }
 
 /// Route an iframe bridge message to the right backend service.
@@ -44,9 +45,9 @@ pub async fn handle_bridge_message(
 /// 避免任务中心堆积无意义 failed 记录(旧兜底分支对任何命令名都先建任务)。
 /// 命令集合按 (plugin_id, manifest mtime) 缓存,避免每次 invoke 读盘解析(高频路径)。
 fn plugin_has_command(plugin_id: &str, command_name: &str) -> bool {
-    let path = dirs::home_dir()
-        .map(|d| d.join(".plugkit/plugins").join(plugin_id).join("manifest.json"))
-        .unwrap_or_default();
+    let path = crate::paths::plugins_dir()
+        .join(plugin_id)
+        .join("manifest.json");
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     {
         let cache = COMMAND_CACHE.lock().unwrap();

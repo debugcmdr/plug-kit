@@ -12,9 +12,7 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn new() -> Self {
         Self {
-            plugins_dir: dirs::home_dir()
-                .map(|d| d.join(".plugkit/plugins"))
-                .unwrap_or_default(),
+            plugins_dir: crate::paths::plugins_dir(),
         }
     }
 
@@ -71,9 +69,7 @@ impl PluginManager {
         };
 
         // 2. Download + verify SHA256 (with mirror fallback).
-        let tmp_dir = dirs::home_dir()
-            .map(|d| d.join(".plugkit/tmp").join(plugin_id))
-            .unwrap_or_default();
+        let tmp_dir = crate::paths::tmp_dir().join(plugin_id);
         // Clean any stale tmp dir from a previous failed install.
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir)
@@ -217,11 +213,16 @@ impl PluginManager {
 
         // 2. 递减共享依赖引用计数：按 plugin_id 扫描 registry 的 refs 递减
         //    （与安装时的递增严格对称；依赖仍被其他插件引用时保留）。
+        //    失败不能静默(G-5):引用未递减会让依赖成为永久孤儿,占用磁盘。
         let dc = crate::dependency_cache::DependencyCache::new();
-        let _ = dc.decrement_refcount_for_plugin(plugin_id).await;
+        if let Err(e) = dc.decrement_refcount_for_plugin(plugin_id).await {
+            log::error!("Uninstall '{}': decrement dependency refcount failed: {}", plugin_id, e);
+        }
 
         // 3. Clean up now-orphaned dependencies (refcount == 0).
-        let _ = dc.clean_orphans().await;
+        if let Err(e) = dc.clean_orphans().await {
+            log::error!("Uninstall '{}': clean orphan dependencies failed: {}", plugin_id, e);
+        }
 
         Ok(crate::InstallResult {
             success: true,
@@ -329,7 +330,20 @@ impl PluginManager {
         // 需要带尾斜杠的 prefix 才能正确剥离 `convert/manifest.json` -> `manifest.json`
         let strip_with_slash = strip_prefix.as_ref().map(|p| format!("{}/", p));
 
+        // 解压炸弹防护(B-3):单文件/累计解压量/条目数均设上限。合法插件 zip <1MB,
+        // 上限为其数倍余量;防 100MB 恶意包(压缩比极高)膨胀为任意大小填满磁盘。
+        const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;   // 单条目 64MB
+        const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;  // 累计 512MB
+        const MAX_ENTRIES: usize = 10_000;               // 条目数上限
+        let mut total_bytes: u64 = 0;
+
         for i in 0..archive.len() {
+            if i >= MAX_ENTRIES {
+                return Err(format!(
+                    "插件包条目数超过上限({}): 疑似恶意包",
+                    MAX_ENTRIES
+                ));
+            }
             let mut file = archive.by_index(i)
                 .map_err(|e| e.to_string())?;
 
@@ -363,8 +377,27 @@ impl PluginManager {
                 }
                 let mut outfile = fs::File::create(&outpath)
                     .map_err(|e| e.to_string())?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| e.to_string())?;
+                // 流式拷贝 + 解压量限制(防 zip bomb:解压体积不受压缩比控制,
+                // 不能信任 zip 头声明的 sizes,按实际写入字节计数)。
+                use std::io::{Read, Write};
+                let mut entry_bytes: u64 = 0;
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    entry_bytes += n as u64;
+                    total_bytes += n as u64;
+                    if entry_bytes > MAX_ENTRY_BYTES || total_bytes > MAX_TOTAL_BYTES {
+                        return Err(format!(
+                            "插件包解压超过大小上限(单文件 {}MB / 累计 {}MB): 疑似恶意包",
+                            MAX_ENTRY_BYTES / (1024 * 1024),
+                            MAX_TOTAL_BYTES / (1024 * 1024)
+                        ));
+                    }
+                    outfile.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                }
             }
         }
         Ok(())
@@ -377,7 +410,9 @@ impl PluginManager {
             crate::security::validate_unzip_path(base, path)?;
         }
         Ok(())
-    }    /// Install any shared dependencies declared in the plugin manifest.
+    }
+
+    /// Install any shared dependencies declared in the plugin manifest.
     /// Shared deps (ffmpeg/yt-dlp) are cached in ~/.plugkit/cache/deps and injected
     /// into the subprocess via PLUGKIT_FFMPEG / PLUGKIT_YTDLP env vars at runtime.
     /// 返回安装警告列表（依赖彻底不可用且无缓存回退时），随 InstallResult 透出。

@@ -14,6 +14,7 @@ mod config_mgr;
 mod logger;
 mod bridge_version;
 mod registry;
+mod paths;
 
 /// Public API facade — used by integration tests and future CLI/headless tooling.
 pub mod api {
@@ -334,10 +335,7 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
     let n = lines.unwrap_or(200).min(2000);
     let level_filter = level.as_deref();
 
-    let log_dir = dirs::home_dir()
-        .ok_or("无法获取用户目录")?
-        .join(".plugkit")
-        .join("logs");
+    let log_dir = paths::logs_dir();
 
     // 按文件名降序取最近的日志文件
     let mut files: Vec<std::path::PathBuf> = if log_dir.is_dir() {
@@ -357,9 +355,11 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
 
     let mut all_lines: Vec<String> = Vec::new();
     for file in files {
-        // 只读文件尾部(R-21):整文件读入内存再 reverse 在日志增长后内存峰值高,
-        // 日志页最多取 2000 行,尾部 256KB 已远超所需。
-        let tail_lines = read_log_tail(&file, n)?;
+        // 文件内行序为旧→新;倒序后新→旧,追加到结果尾部 →
+        // 整体保持「最新在前、最旧在后」(B-2:原实现跨文件聚合后整体
+        // reverse,当天日志不足请求行数跨入昨天文件时顺序颠倒)。
+        let mut tail_lines = read_log_tail(&file, n)?;
+        tail_lines.reverse();
         for line in tail_lines {
             if line.is_empty() { continue; }
             if let Some(lv) = level_filter {
@@ -376,7 +376,6 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
         }
         if all_lines.len() >= n { break; }
     }
-    all_lines.reverse();
     Ok(all_lines)
 }
 
@@ -412,9 +411,7 @@ fn read_log_tail(path: &std::path::Path, max_lines: usize) -> Result<Vec<String>
 /// download.tmp 不可能是合法文件:下载完成即 rename 为最终名;启动时无活跃
 /// 下载进程,直接全删,防止中断残留持续占用磁盘。
 fn cleanup_stale_download_tmp() {
-    let Some(cache_deps) = dirs::home_dir().map(|d| d.join(".plugkit/cache/deps")) else {
-        return;
-    };
+    let cache_deps = paths::cache_deps_dir();
     if !cache_deps.is_dir() {
         return;
     }
@@ -450,12 +447,11 @@ pub fn run() {
                 task_queue::TaskQueue::recover().await;
                 // 清理崩溃残留的工作/安装临时目录(启动时无运行中任务,删除安全):
                 // ~/.plugkit/tmp(插件安装临时目录)与 ~/.plugkit/work(任务工作目录)
-                for sub in ["tmp", "work"] {
-                    if let Some(dir) = dirs::home_dir().map(|d| d.join(".plugkit").join(sub)) {
-                        if let Ok(rd) = std::fs::read_dir(&dir) {
-                            for e in rd.flatten() {
-                                let _ = std::fs::remove_dir_all(e.path());
-                            }
+                let dirs_to_clean = [paths::tmp_dir(), paths::work_dir()];
+                for dir in dirs_to_clean {
+                    if let Ok(rd) = std::fs::read_dir(&dir) {
+                        for e in rd.flatten() {
+                            let _ = std::fs::remove_dir_all(e.path());
                         }
                     }
                 }
