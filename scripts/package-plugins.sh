@@ -20,7 +20,12 @@ OUT_DIR="release/plugins"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*.zip
 
-for id in download convert playlist; do
+# 自动发现插件目录(B: 消除硬编码,新增插件零配置参与打包):
+# 任何 plugins/<id>/manifest.json 都进入打包循环;shared 是公共模块目录,跳过。
+PLUGIN_IDS="$(ls plugins | grep -v '^shared$')"
+
+for id in $PLUGIN_IDS; do
+  [ -f "plugins/$id/manifest.json" ] || { echo "跳过 $id (无 manifest.json)"; continue; }
   echo "=== 打包 $id ==="
 
   # 版本以插件自身 manifest.json 为准(唯一事实源),zip 命名与清单 version 同源。
