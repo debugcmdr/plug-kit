@@ -105,6 +105,50 @@ async fn stat_file(path: String) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "size": meta.len() }))
 }
 
+/// 应用版本号(编译注入,设置页「关于」显示;与更新检查的比较基准一致)。
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// 检查应用(外壳)是否有新版本发布——**仅告知,不下载覆盖**(一键更新后续再说)。
+/// 查询 GitHub Releases 最新 tag 与当前 CARGO_PKG_VERSION 比较;
+/// 网络失败/限流(无 token 约 60 次/时)静默返回 has_update=false,不打扰用户。
+/// 更新获取走「设置-关于」的链接跳转 GitHub Releases(open_url)。
+#[tauri::command]
+async fn check_app_update() -> Result<serde_json::Value, String> {
+    let url = "https://api.github.com/repos/debugcmdr/plug-kit/releases/latest";
+    let data: serde_json::Value = match crate::dependency_cache::HTTP_CLIENT
+        .get(url)
+        .header("User-Agent", "PlugKit")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            r.json().await.unwrap_or(serde_json::Value::Null)
+        }
+        _ => serde_json::Value::Null, // 网络/404/限流 → 静默视为无更新
+    };
+    let tag = data
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let current = env!("CARGO_PKG_VERSION");
+    let has_update = semver::Version::parse(tag.trim_start_matches('v'))
+        .map(|t| {
+            t > semver::Version::parse(current)
+                .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
+        })
+        .unwrap_or(false);
+    Ok(serde_json::json!({
+        "has_update": has_update,
+        "latest_version": tag,
+        "current_version": current,
+        "url": data.get("html_url").and_then(|v| v.as_str())
+            .unwrap_or("https://github.com/debugcmdr/plug-kit/releases"),
+    }))
+}
+
 /// 在系统文件管理器中打开指定路径(文件夹或文件的所在目录)。
 /// 供插件 iframe 的「打开保存路径」按钮调用。
 #[tauri::command]
@@ -486,6 +530,8 @@ pub fn run() {
             log_error,
             log_read,
             stat_file,
+            get_app_version,
+            check_app_update,
         ]);
     protocol::register_protocol(builder)
         .build(tauri::generate_context!())

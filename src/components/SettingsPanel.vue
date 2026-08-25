@@ -3,13 +3,15 @@ import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { CacheStats } from '../types'
 import { useMessage } from 'naive-ui'
+import { appUpdate, fetchAppVersion } from '../stores/plugins'
 import AppIcon from './AppIcon.vue'
 
 const message = useMessage()
 const cacheStats = ref<CacheStats | null>(null)
 
-// 应用版本从 tauri.conf.json 编译注入（通过环境变量）
-const APP_VERSION = import.meta.env.VITE_APP_VERSION || '0.1.0'
+// 应用版本从 Rust 编译注入透出(get_app_version = CARGO_PKG_VERSION),
+// 与更新检查的比较基准一致;启动时 checkAppUpdate 已填充 appUpdate(设置图标红点)。
+const APP_VERSION = ref('')
 
 async function loadCacheStats() {
   try {
@@ -19,7 +21,21 @@ async function loadCacheStats() {
   }
 }
 
-onMounted(loadCacheStats)
+onMounted(async () => {
+  loadCacheStats()
+  APP_VERSION.value = await fetchAppVersion()
+})
+
+// 有外壳新版本时跳转 GitHub Releases(仅告知,不下载覆盖)
+async function openReleases() {
+  try {
+    await invoke('open_url', {
+      url: appUpdate.value.url || 'https://github.com/debugcmdr/plug-kit/releases',
+    })
+  } catch (e) {
+    message.error(`打开更新页面失败: ${e}`)
+  }
+}
 
 async function cleanOrphanCache() {
   try {
@@ -76,9 +92,16 @@ async function openDataDir() {
     <!-- 关于 -->
     <n-card title="关于">
       <n-space direction="vertical" :size="8">
-        <div style="display: flex; justify-content: space-between;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="color: var(--n-text-color-2);">版本</span>
-          <n-tag size="small">{{ APP_VERSION }}</n-tag>
+          <span style="display:flex; align-items:center; gap:8px;">
+            <n-tag size="small">{{ APP_VERSION }}</n-tag>
+            <!-- 外壳新版本提示:红点已在设置图标;此处给出版本与跳转入口(仅告知) -->
+            <template v-if="appUpdate.has_update">
+              <n-tag size="small" type="error" round :bordered="false">有新版本 v{{ appUpdate.latest_version }}</n-tag>
+              <n-button size="tiny" type="primary" @click="openReleases">查看更新</n-button>
+            </template>
+          </span>
         </div>
         <div style="display: flex; justify-content: space-between;">
           <span style="color: var(--n-text-color-2);">数据目录</span>

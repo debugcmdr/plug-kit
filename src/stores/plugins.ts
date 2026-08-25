@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { PluginInfo, InstallResult, Task } from '../types'
 
@@ -7,6 +7,52 @@ export const loading = ref(false)
 
 // 已安装插件集合变更信号:自增计数,任何组件 watch 它来刷新已安装列表。
 export const installedVersion = ref(0)
+
+/** 简单 semver 比较:返回 >0 表示 a>b(供工具箱/市场判断「可更新」)。
+ * 注:不处理预发布(v1.0.0-rc1 视为等于 1.0.0),官方工具版本均为纯数字,够用。 */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0)
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+// 已安装插件有可用更新的数量(工具箱红点):市场数据刷新(启动/轮询/安装卸载)后自动更新。
+export const marketUpdateCount = computed(
+  () => marketPlugins.value.filter(p =>
+    p.is_installed && !!p.installed_version &&
+    compareVersions(p.installed_version, p.version) < 0
+  ).length
+)
+
+// ---- 应用(外壳)更新检查:仅告知「有新版本」,不下载覆盖(一键更新后续再说) ----
+export interface AppUpdateInfo {
+  has_update: boolean
+  latest_version?: string
+  current_version?: string
+  url?: string
+}
+export const appUpdate = ref<AppUpdateInfo>({ has_update: false })
+
+/** 检查外壳新版本(启动调用一次)。仅告知;网络失败/限流静默不打扰。 */
+export async function checkAppUpdate(): Promise<void> {
+  try {
+    const r = await invoke<AppUpdateInfo>('check_app_update')
+    if (r) appUpdate.value = r
+  } catch { /* 静默 */ }
+}
+
+/** 应用版本号(编译注入,与 Rust CARGO_PKG_VERSION 一致;设置页「关于」显示)。 */
+export async function fetchAppVersion(): Promise<string> {
+  try {
+    return await invoke<string>('get_app_version')
+  } catch {
+    return ''
+  }
+}
 
 export async function fetchPlugins() {
   loading.value = true

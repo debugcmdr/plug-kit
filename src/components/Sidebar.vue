@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { PluginInfo } from '../types'
-import { installedVersion, tasks } from '../stores/plugins'
+import { installedVersion, tasks, marketUpdateCount, appUpdate } from '../stores/plugins'
 import AppIcon from './AppIcon.vue'
 
 const emit = defineEmits<{
@@ -242,7 +242,9 @@ function handleSelect(target: string) {
         @click="handleSelect('market')"
       >
         <AppIcon name="market" :size="16" class="nav-icon" />
-        <span class="nav-label">插件市场</span>
+        <span class="nav-label">工具箱</span>
+        <!-- 已装工具有可用更新:红点提示(进入工具箱可一键更新) -->
+        <n-badge v-if="marketUpdateCount > 0" :value="marketUpdateCount" :max="99" color="#f53f3f" class="nav-badge" />
       </div>
       <div
         class="nav-item"
@@ -251,6 +253,8 @@ function handleSelect(target: string) {
       >
         <AppIcon name="settings" :size="16" class="nav-icon" />
         <span class="nav-label">设置</span>
+        <!-- 外壳有新版本:点状红点(详情在设置-关于) -->
+        <n-badge v-if="appUpdate.has_update" dot color="#f53f3f" class="nav-badge" />
       </div>
     </div>
   </n-layout-sider>

@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './views/MainContent.vue'
-import { startMarketPoll, startTaskPoll } from './stores/plugins'
+import { startMarketPoll, startTaskPoll, checkAppUpdate } from './stores/plugins'
 
 // 统一设计 Token(naive-ui 主题覆盖):主色/圆角/柔和阴影,
 // 保证外壳各面板视觉一致(品牌蓝 #3370ff)。
@@ -82,6 +82,9 @@ onMounted(async () => {
   // 此前 startTaskPoll 只在任务面板挂载时启动,从未进过任务面板时
   // 侧边栏徽标不随任务开始/结束实时更新。
   startTaskPoll()
+  // 启动检查外壳新版本(仅告知:设置图标亮红点 + 关于卡片提示,链接 GitHub Releases)。
+  // 工具(插件)更新走市场清单轮询,红点见侧边栏「工具箱」。
+  checkAppUpdate()
 })
 
 // Window-level bridge relay: plugin iframes postMessage {type:'plugkit:invoke'}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mapTask } from '../../src/stores/plugins'
+import { mapTask, compareVersions } from '../../src/stores/plugins'
 
 describe('mapTask（后端 list_tasks 原始 JSON -> 前端 Task）', () => {
   it('映射 type 字段（回归 P0-2：后端 serde rename 输出 "type"）', () => {
@@ -35,5 +35,18 @@ describe('mapTask（后端 list_tasks 原始 JSON -> 前端 Task）', () => {
     expect(task.error).toBe('输入文件不存在: /x.mp4')
     // 无 error 时回退 undefined
     expect(mapTask({ task_id: 't-3' } as Record<string, unknown>).error).toBeUndefined()
+  })
+})
+
+describe('compareVersions（工具箱更新红点版本比较）', () => {
+  it('相等与大小比较', () => {
+    expect(compareVersions('0.6.0', '0.6.0')).toBe(0)
+    expect(compareVersions('0.6.0', '0.7.0')).toBeLessThan(0)
+    expect(compareVersions('0.7.0', '0.6.0')).toBeGreaterThan(0)
+  })
+
+  it('长度不同按缺失段为 0 比较', () => {
+    expect(compareVersions('1.0', '1.0.1')).toBeLessThan(0)
+    expect(compareVersions('1.0.1', '1.0')).toBeGreaterThan(0)
   })
 })

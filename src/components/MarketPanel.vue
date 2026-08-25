@@ -9,6 +9,7 @@ import {
   refreshMarket,
   installPlugin as installFromStore,
   uninstallPlugin as uninstallFromStore,
+  compareVersions,
 } from '../stores/plugins'
 
 const message = useMessage()
@@ -31,17 +32,7 @@ async function manualRefresh() {
   }
 }
 
-/** 简单 semver 比较:返回 >0 表示 a>b。用于判断插件是否有更新。 */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(n => parseInt(n, 10) || 0)
-  const pb = b.split('.').map(n => parseInt(n, 10) || 0)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d !== 0) return d
-  }
-  return 0
-}
-
+/** 已安装且有更新(compareVersions 由 store 共享,工具箱红点同源判断)。 */
 function hasUpdate(plugin: typeof marketPlugins.value[0]): boolean {
   return !!plugin.is_installed && !!plugin.installed_version &&
     compareVersions(plugin.installed_version, plugin.version) < 0
@@ -105,7 +96,7 @@ function pluginColor(id: string) {
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px; background:rgba(51,112,255,.1); color:var(--n-primary-color);"><AppIcon name="market" :size="18" /></span>
-        <n-h2 style="margin: 0; font-size:20px;">插件市场</n-h2>
+        <n-h2 style="margin: 0; font-size:20px;">工具箱</n-h2>
       </div>
       <n-button size="small" :loading="manualRefreshLoading" @click="manualRefresh">
         <template #icon><AppIcon name="refresh" :size="14" /></template>
@@ -114,7 +105,7 @@ function pluginColor(id: string) {
     </div>
     <n-input
       v-model:value="searchQuery"
-      placeholder="搜索插件..."
+      placeholder="搜索工具..."
       clearable
       style="margin-bottom: 24px; max-width: 400px;"
     >
@@ -160,7 +151,7 @@ function pluginColor(id: string) {
         </n-gi>
       </n-grid>
 
-      <n-empty v-if="!marketLoading && filteredPlugins().length === 0" description="暂无插件" />
+      <n-empty v-if="!marketLoading && filteredPlugins().length === 0" description="暂无工具" />
     </n-spin>
   </div>
 </template>
