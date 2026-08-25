@@ -263,4 +263,19 @@ A-14/A-15、B-17/B-18/B-19、C-9、D-5、E-4/E-5 等格式与命名问题，修�
 - P1-13（签名启用）为发布前操作项，涉及密钥管理，按你的节奏执行；
 - manifest 依赖约束置空后，Rust 端不解析约束的事实与声明一致（存在性声明）；未来若需版本门槛，应在 dep_manifest 层实现（非 manifest 字符串）。
 
+---
+
+## 追加：方向级调整执行记录（2026-08-25）
+
+### 1. 方向定案（归零审查后）
+放弃第三方插件生态，工具全部官方维护；**工具级热更新为主**（工具箱红点 + 一键更新），外壳变更才发整包；应用内一键覆盖更新（updater）暂不做，仅「检查更新 + 链接 GitHub」告知。对应 commits：`fb33e8c`（工具箱改名/红点/check_app_update）、`06c9943`（new-plugin 脚手架 + package-plugins 自动发现）。
+
+### 2. 解析服务已删除（commit `eef0071`）
+本报告 C-2/C-5/G-12 涉及 `_ytdlp_service` 的条目随本次删除而失效（C-2 的 progress 提示逻辑已迁移至 `_ensure_ytdlp_venv`）。删除依据为 ROI 实测（冷解析直连 1.69s vs 服务 1.57s，仅差 0.1s，网络主导；250MB 常驻换"同 URL 重复解析 0s"边缘场景不划算）。
+
+- 删除 `plugins/shared/_ytdlp_service.py`；`_ytdlp.py` 移除服务客户端，venv 创建迁移 `_ensure_ytdlp_venv`（`ytdlp_binary()` venv 缺失时自动创建 + progress 提示，失败回退二进制）
+- 顺带修复隐藏 NameError：`ytdlp_binary()` 回退分支引用 `dep` 但 `_ytdlp.py` 未导入（venv 存在时未暴露）
+- download/playlist CLI 移除服务分支，解析/下载统一直连 venv pip 版
+- 验证：pytest 43 passed / verify-manifests 通过 / 重打包 + dev 副本同步无残留
+
 *报告完毕。修复执行完成，可进入验收（真实链路验证建议：大列表导出不被 5 分钟杀掉；装 A 装 B → 卸 A → B 缓存不误删）。*
