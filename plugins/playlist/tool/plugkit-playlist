@@ -15,11 +15,11 @@ import sys
 # 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
 try:
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
+    from _ytdlp import cookies_args, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
+    from _ytdlp import cookies_args, diagnose_ytdlp_error, ytdlp_binary  # noqa: F401
 
 # 下载优先 venv pip 版 yt-dlp(冷启动 0.4s vs 单文件二进制 22s);venv 缺失回退
 # 外壳注入的缓存二进制(P1-14)。
@@ -37,16 +37,7 @@ def base_cmd(extra_args=()):
 # ---------------------------------------------------------------- 提取条目
 def list_playlist(url, cookies=""):
     """提取播放列表/频道条目列表(flat 模式,只拿标题/时长/链接,速度快)。"""
-    # 解析加速:优先常驻服务(冷启动只付一次 + 元数据缓存,重复解析秒回);
-    # 服务返回解析失败 → 直接报错;服务链路不可用 → 降级直连(行为与历史一致)。
-    svc = ytdlp_extract_service(url, cookies, "flat")
-    if svc and "data" in svc:
-        _build_list_result(svc["data"])
-        return
-    if svc and "error_code" in svc:
-        error(svc["error_code"], svc["error_message"])
-        return
-    # 降级:直连 yt-dlp(现状路径)
+    # 直连 yt-dlp(venv pip 版冷启动 0.4s,与下载同源):
     cmd = base_cmd(["--flat-playlist", "--no-warnings", "-J", url]) + cookies_args(cookies)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)

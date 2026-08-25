@@ -6,7 +6,7 @@
 //! 集中后:未来支持自定义数据目录(便携模式等)只需改本模块;新增子目录也不再散落。
 //!
 //! ⚠️ 插件侧(Python shared)仍有 `~/.plugkit/venvs/ytdlp` 等路径,改动本模块
-//! 时需同步 _ytdlp.py 的 VENV_DIR / _ytdlp_service.py 的 SOCK_PATH。
+//! 时需同步 _ytdlp.py 的 VENV_DIR。
 
 use std::path::PathBuf;
 
