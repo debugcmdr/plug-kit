@@ -101,7 +101,9 @@ def run_with_progress(cmd, duration, label, file_name=None, output_path=None):
         if err == "FFMPEG_MISSING":
             error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
             return None
-        msg = "ffmpeg 转换失败。请检查输入文件是否损坏、所选格式是否支持、磁盘空间是否充足。"
+        # 带输出文件名:批量/并发转换时用户能定位是哪个文件失败(C-10)
+        target = f" {file_name or os.path.basename(output_path or '')}"
+        msg = f"ffmpeg 转换失败{target}。请检查输入文件是否损坏、所选格式是否支持、磁盘空间是否充足。"
         if err:
             msg += f" ｜ 详情: {err} (ffmpeg 退出码 {code})"
         else:
@@ -140,7 +142,10 @@ def _reserve_path(path):
     os.makedirs(d, exist_ok=True)
     cand = path
     i = 1
-    while True:
+    # 上限保护(C-11):目录权限异常等场景下 O_EXCL 可能持续抛 FileExistsError
+    # 之外的异常由上层捕获;这里仅防"序号已占满"的极端循环(理论上几乎不可能)。
+    max_tries = 10000
+    while i <= max_tries:
         try:
             fd = os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
@@ -148,6 +153,7 @@ def _reserve_path(path):
         except FileExistsError:
             cand = os.path.join(d, f"{base} ({i}){ext}")
             i += 1
+    raise OSError(f"无法为输出路径分配唯一文件名(已尝试 {max_tries} 次): {path}")
 
 
 def ensure_output_dir(output_path):
@@ -162,6 +168,16 @@ def cleanup_if_empty(path):
     残留的空文件会让用户误以为输出已生成。仅删 size==0 的文件,不动 ffmpeg 半成品。"""
     try:
         if os.path.exists(path) and os.path.getsize(path) == 0:
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _remove_output(path):
+    """删除输出文件(含半成品),失败静默。用于「降级路径」:首次尝试失败的产物
+    (可能 >0 字节)将被降级产物替代,残留只会误导用户(C-3)。"""
+    try:
+        if path and os.path.exists(path):
             os.remove(path)
     except Exception:
         pass
@@ -193,7 +209,7 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
         if missing:
             cleanup_if_empty(output_path)
             error("ENCODER_MISSING",
-                  f"当前 ffmpeg 缺少 {', '.join(missing)} 编码器,无法转 WebM。可用: mp4/mkv/mov")
+                  f"当前 ffmpeg 缺少 {', '.join(missing)} 编码器,无法转 WebM。可用: mp4/mkv/mov。{ENCODER_SELF_HELP}")
             return
         cmd = [FFMPEG, "-y", "-i", input_path,
                "-c:v", "libvpx-vp9", "-preset", preset_map.get(preset, "medium"),
@@ -204,7 +220,7 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
             # H.265: 小体积但转码慢;缺编码器时给明确提示而不是 ffmpeg 报错。
             if not has_encoder("libx265"):
                 cleanup_if_empty(output_path)
-                error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)")
+                error("ENCODER_MISSING", f"当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)。{ENCODER_SELF_HELP}")
                 return
             cmd = [FFMPEG, "-y", "-i", input_path,
                    "-c:v", "libx265", "-preset", preset_map.get(preset, "medium"),
@@ -223,13 +239,15 @@ def convert_video(input_path, output_path, preset="medium", crf=None, audio_bitr
             # MKV 容器 + H.265(无需 hvc1 tag,那是 mp4 的要求)
             if not has_encoder("libx265"):
                 cleanup_if_empty(output_path)
-                error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)")
+                error("ENCODER_MISSING", f"当前 ffmpeg 缺少 libx265 编码器,无法转 H.265。可用: H.264 (默认)。{ENCODER_SELF_HELP}")
                 return
             cmd += ["-c:v", "libx265", "-preset", preset_map.get(preset, "medium"),
                     "-crf", crf or "23", "-c:a", "aac", "-b:a", audio_bitrate or "128k"]
         elif ext in (".avi", ".mpg", ".mpeg", ".flv"):
+            # AVI / MPEG-PS 容器对 AAC 支持不佳(部分播放器打不开)→ 音频用 mp3 更兼容;
+            # flv 同时支持 AAC,统一 mp3 保持分支简单。
             cmd += ["-c:v", "libx264", "-preset", preset_map.get(preset, "medium"),
-                    "-crf", crf or "23", "-c:a", "aac"]
+                    "-crf", crf or "23", "-c:a", "libmp3lame", "-b:a", audio_bitrate or "128k"]
         elif ext in (".ts", ".m4v"):
             # copy 优先:快速无损封装。源编码与容器不兼容(如 vp9→m4v)时
             # ffmpeg 报错,降级转码 libx264 重试(避免"选了就必失败")。
@@ -286,6 +304,10 @@ def build_audio_cmd(input_path, output_path, audio_bitrate=None):
         ".flac": "flac", ".ogg": "libvorbis", ".aac": "aac",
         ".wma": "wmav2", ".aiff": "pcm_s16be", ".opus": "libopus",
         ".amr": "libopencore_amrnb",
+        # m4b/mka 在输入白名单内(m4b=有声书/m4a 变体,mka=Matroska 音频):
+        # 输出侧同样需要编码映射,缺省会回退 libmp3lame 把 mp3 写进 m4b/mka
+        # 容器导致 ffmpeg 报错或生成坏文件(C-6)。
+        ".m4b": "aac", ".mka": "aac",
     }
     codec = codec_map.get(ext, "libmp3lame")
     if ext == ".ogg" and not has_encoder("libvorbis"):
@@ -325,7 +347,7 @@ def convert_audio(input_path, output_path, audio_bitrate=None):
     if need_encoder and not has_encoder(need_encoder):
         cleanup_if_empty(output_path)
         error("ENCODER_MISSING",
-              f"当前 ffmpeg 缺少 {need_encoder} 编码器,无法转 {ext.lstrip('.')}。可用: mp3/m4a/wav/flac")
+              f"当前 ffmpeg 缺少 {need_encoder} 编码器,无法转 {ext.lstrip('.')}。可用: mp3/m4a/wav/flac。{ENCODER_SELF_HELP}")
         return
 
     cmd = build_audio_cmd(input_path, output_path, audio_bitrate)
@@ -352,6 +374,14 @@ AUDIO_CODEC_EXT = {
 }
 
 
+def audio_copy_ext(codec):
+    """源音轨编码 → 可无损封装的容器扩展名;未知编码(dts/truehd/mlp/pcm_u8 等)返回 None。
+
+    未知编码没有可无损封装的容器 → 调用方降级:先按 wav 尝试 -c:a copy(大概率失败,
+    因为 wav 只接受 PCM),失败再重编码 mp3。绝不能对 None 直接拼接路径(曾导致 TypeError 崩溃)。"""
+    return AUDIO_CODEC_EXT.get(codec)
+
+
 def probe_audio_codec(path):
     """ffprobe 探测首条音频流的编码器名;无音轨/探测失败返回 None。"""
     try:
@@ -376,7 +406,7 @@ def extract_audio_copy(input_path, output_path):
         return
 
     base = os.path.splitext(output_path)[0]
-    fmt = AUDIO_CODEC_EXT.get(codec)
+    fmt = audio_copy_ext(codec) or "wav"  # 未知编码:按 wav 尝试 copy,失败走下方降级 mp3
     real_output = _reserve_path(base + "." + fmt)
     ensure_output_dir(real_output)
     fname = os.path.basename(real_output)
@@ -388,8 +418,10 @@ def extract_audio_copy(input_path, output_path):
            "-map_metadata", "0", real_output]
     ok, err, code = run_ffmpeg(cmd, duration, "提取中", file_name=fname, output_path=real_output)
     if not ok:
-        # 容器不支持该编码(copy 失败)→ 降级重编码 mp3
-        cleanup_if_empty(real_output)
+        # 容器不支持该编码(copy 失败)→ 降级重编码 mp3。
+        # 降级前删除首次失败的产物(可能 >0 字节的半成品):降级成功后旧文件
+        # 残留会让用户以为生成了两份/看到损坏文件(C-3)。
+        _remove_output(real_output)
         progress(0, message="无损封装失败,降级重编码 mp3…")
         fallback = _reserve_path(base + ".mp3")
         cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-acodec", "libmp3lame",
@@ -422,14 +454,41 @@ def has_encoder(name):
         return False
 
 
+@lru_cache(maxsize=None)
+def has_muxer(name):
+    """检测 ffmpeg 是否有指定封装器(muxer)。
+
+    编码器存在 ≠ 能输出该格式:如 macOS homebrew 构建有 libx265 但无 heif muxer,
+    转 HEIC 运行时才报 "Unable to choose an output format"。heic/webm 等格式
+    需要「编码器 + 封装器」双组件,probe 提前检测供 UI 置灰。"""
+    try:
+        proc = subprocess.run([FFMPEG, "-hide_banner", "-muxers"],
+                              capture_output=True, text=True, timeout=10)
+        return f" {name} " in f" {proc.stdout} "
+    except Exception:
+        return False
+
+
+# 编码器/封装器缺失时的自助路径引导(追加到所有 ENCODER_MISSING 报错):
+# 依赖体系「系统 PATH 优先」——安装含所需编码器的系统 ffmpeg 后自动识别。
+# 注意:macOS 常用构建(brew/evermeet)均不含 libwebp/HEIF,装系统 ffmpeg 也解不了
+# webp/heic,故不写具体命令(避免误导),缺失组件在报错文案/tooltip 中已列出。
+ENCODER_SELF_HELP = "可安装含所需编码器的系统 ffmpeg 后自动解锁,或换用可用格式"
+
+
 # ---------------------------------------------------------------- 图片转换
-# JPG 的 -q:v 是量化标度(1~31,越小越好),与 UI 的"90/75/60(越大越好)"语义相反,
-# 直接透传 90/75/60 会被 ffmpeg clamp 到最差质量(曾实测三者输出完全一致)。
-# 这里映射: 90→2(高) 75→5(中) 60→8(低)。
-JPG_Q_MAP = {"90": "2", "75": "5", "60": "8"}
+# 质量档位统一为语义值 high/medium/low(UI 只暴露语义,不暴露编码器原生数值):
+# - JPG 的 -q:v 是量化标度(1~31,越小越好)——UI 曾直接透传 90/75/60 被 ffmpeg
+#   clamp 到最差质量(曾实测三者输出完全一致),必须映射
+# - webp 的 -quality(0~100,越大越好) 与 jpg 方向相反——各格式各自映射,不做伪统一值
+# - avif/heic 用 -crf(越小越好),由固定值改为可调档位
+JPG_Q_MAP = {"high": "2", "medium": "5", "low": "8"}
+WEBP_Q_MAP = {"high": "90", "medium": "75", "low": "60"}
+AVIF_CRF_MAP = {"high": "26", "medium": "30", "low": "36"}
+HEIC_CRF_MAP = {"high": "24", "medium": "28", "low": "33"}
 
 
-def convert_image(input_path, output_path, quality="90"):
+def convert_image(input_path, output_path, quality="high"):
     output_path = resolve_output(input_path, output_path)
     ensure_output_dir(output_path)
     progress(0, message=f"开始转换图片 {os.path.basename(input_path)}...",
@@ -438,44 +497,48 @@ def convert_image(input_path, output_path, quality="90"):
     ext = os.path.splitext(output_path)[1].lower()
     cmd = [FFMPEG, "-y", "-i", input_path]
     if ext in (".jpg", ".jpeg"):
-        cmd += ["-q:v", JPG_Q_MAP.get(quality, "5"), "-qmin", "1"]
+        cmd += ["-q:v", JPG_Q_MAP.get(quality, JPG_Q_MAP["medium"]), "-qmin", "1"]
     elif ext == ".webp":
         if not has_encoder("libwebp"):
             cleanup_if_empty(output_path)
-            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libwebp 编码器,无法转 WebP。可用: jpg/png/heic")
+            error("ENCODER_MISSING", f"当前 ffmpeg 缺少 libwebp 编码器,无法转 WebP。可用: jpg/png/heic。{ENCODER_SELF_HELP}")
             return
-        cmd += ["-quality", quality]
+        cmd += ["-quality", WEBP_Q_MAP.get(quality, WEBP_Q_MAP["medium"])]
     elif ext == ".png":
         cmd += ["-compression_level", "6"]
     elif ext == ".heic":
-        if not has_encoder("libx265"):
+        if not has_encoder("libx265") or not has_muxer("heif"):
             cleanup_if_empty(output_path)
-            error("ENCODER_MISSING", "当前 ffmpeg 缺少 libx265 编码器,无法转 HEIC。可用: jpg/png/webp")
+            error("ENCODER_MISSING", f"当前 ffmpeg 缺少 libx265 编码器或 HEIF 封装器,无法转 HEIC。可用: jpg/png/webp。{ENCODER_SELF_HELP}")
             return
-        cmd += ["-c:v", "libx265", "-tag:v", "hvc1"]
+        cmd += ["-c:v", "libx265", "-crf", HEIC_CRF_MAP.get(quality, HEIC_CRF_MAP["medium"]), "-tag:v", "hvc1"]
     elif ext == ".avif":
         # AVIF = AV1 容器:libsvtav1 快、libaom-av1 质量好;都缺则明确提示。
         # 注意:不用 -still-picture(ffmpeg 8.x 的 libsvtav1 已不暴露该选项,会报错)。
         if has_encoder("libsvtav1"):
-            cmd += ["-c:v", "libsvtav1", "-crf", "30", "-b:v", "0"]
+            cmd += ["-c:v", "libsvtav1", "-crf", AVIF_CRF_MAP.get(quality, AVIF_CRF_MAP["medium"]), "-b:v", "0"]
         elif has_encoder("libaom-av1"):
-            cmd += ["-c:v", "libaom-av1", "-crf", "30", "-b:v", "0"]
+            cmd += ["-c:v", "libaom-av1", "-crf", AVIF_CRF_MAP.get(quality, AVIF_CRF_MAP["medium"]), "-b:v", "0"]
         else:
             cleanup_if_empty(output_path)
-            error("ENCODER_MISSING", "当前 ffmpeg 缺少 AV1 编码器(libsvtav1/libaom),无法转 AVIF。可用: jpg/png/webp")
+            error("ENCODER_MISSING", f"当前 ffmpeg 缺少 AV1 编码器(libsvtav1/libaom),无法转 AVIF。可用: jpg/png/webp。{ENCODER_SELF_HELP}")
             return
     cmd.append(output_path)
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     except FileNotFoundError:
+        # 占位文件残留会让用户误以为输出已生成(与 convert_video 各失败分支一致)
+        cleanup_if_empty(output_path)
         error("FFMPEG_MISSING", "未找到 ffmpeg,请先安装共享依赖")
         return
     except subprocess.TimeoutExpired:
+        cleanup_if_empty(output_path)
         error("TIMEOUT", "图片转换超时(180s)。可尝试更换更快的预设或减小输入文件")
         return
 
     if proc.returncode != 0:
+        cleanup_if_empty(output_path)
         err = (proc.stderr or "").strip()[-400:]
         msg = "图片转换失败。请检查输入图片是否损坏、所选格式是否支持。"
         if err:
@@ -505,6 +568,8 @@ def probe():
                 "libvorbis", "libwebp", "libsvtav1", "libaom-av1", "wmav2",
                 "libopencore_amrnb", "flac", "aac"):
         encoders[enc] = has_encoder(enc)
+    # 封装器能力(编码器存在不代表能输出该容器,如 macOS 构建有 libx265 无 heif)
+    muxers = {"heif": has_muxer("heif")}
     try:
         has_ff = subprocess.run([FFMPEG, "-version"],
                                 capture_output=True, timeout=5).returncode == 0
@@ -512,18 +577,22 @@ def probe():
         has_ff = False
     result({
         "has_ffmpeg": has_ff,
+        # ffmpeg 来源:system=系统 PATH 优先(用户装的,可能是全功能构建);
+        # cached=共享缓存下载的内置精简构建(缺 GPL 编码器,置灰时引导装系统 ffmpeg)。
+        "ffmpeg_source": "system" if FFMPEG == "ffmpeg" else "cached",
         "video_formats": ["mp4", "mkv", "mov", "webm", "avi", "gif", "m4v", "ts", "mpg", "flv"],
-        "extractable_audio": ["copy", "mp3", "m4a", "wav"],
+        "extractable_audio": ["copy", "mp3", "m4a", "wav", "flac"],
         "audio_formats": ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "aiff"],
         "image_formats": ["jpg", "png", "webp", "avif", "gif", "heic", "bmp", "tiff"],
         "encoders": encoders,
+        "muxers": muxers,
     })
 
 
 def main():
     argv = sys.argv[1:]
     if not argv:
-        result({"usage": "convert <probe|convert> --input FILE --output FILE [--preset fast|medium|slow] [--quality 90] [--audio-bitrate 128k] [--gif-fps 10] [--gif-width 480]"})
+        result({"usage": "convert <probe|convert> --input FILE --output FILE [--preset fast|medium|slow] [--quality high|medium|low] [--audio-bitrate 128k] [--gif-fps 10] [--gif-width 480]"})
         return
     cmd = argv[0]
     args = parse_args(argv[1:])
@@ -548,8 +617,8 @@ def main():
             elif out_ext in AUDIO_EXTS:
                 convert_audio(inp, args["output"], args.get("audio_bitrate"))
             elif out_ext in IMAGE_EXTS:
-                # quality 空串(manifest 占位符未提供)容错回退 90
-                convert_image(inp, args["output"], args.get("quality") or "90")
+                # quality 空串(manifest 占位符未提供)容错回退 high
+                convert_image(inp, args["output"], args.get("quality") or "high")
             else:
                 # 否则按输入类别走视频转换;codec 仅影响 mp4(h264 默认 / hevc)。
                 # 提取音频是独立操作:UI 输出 .mp3/.m4a/.wav/.copy 时走上方分支。

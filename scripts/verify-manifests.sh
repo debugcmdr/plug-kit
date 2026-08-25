@@ -14,7 +14,7 @@ cd "$ROOT"
 PLUGIN_DIR="${1:-release/plugins}"
 
 python3 - "$PLUGIN_DIR" <<'PYEOF'
-import json, hashlib, pathlib, sys, zipfile
+import json, hashlib, pathlib, re, sys, zipfile
 
 plugin_dir = sys.argv[1]
 paths = ['market/plugins.json', 'src-tauri/assets/fallback-manifests.json']
@@ -43,6 +43,41 @@ for p in datas[0]:
         print(f"ERROR: {p['id']} binaryUrl 格式非法(可能空 tag): {bu}")
         errors += 1
         print("  提示:开发期 tag 为空时 binaryUrl 应为 releases/latest/download/...,运行 ./scripts/package-plugins.sh 重新生成")
+
+    # 7. 依赖声明完整性门禁(放在 zip 检查之前:无打包产物时也必须校验,防漏跑打包):
+    #    CLI 源码里 dep("name") 引用的共享依赖必须声明在 manifest.dependencies
+    #    (防 download/playlist 漏声明 ffmpeg 导致安装期不装、运行期才报 FFMPEG 类错误)。
+    local_path = pathlib.Path('plugins') / p['id']
+    cli_text = ''
+    if local_path.is_dir():
+        for f in local_path.glob('tool/plugkit-*'):
+            if f.is_file():
+                cli_text += f.read_text(encoding='utf-8', errors='ignore')
+    deps_used = set(re.findall(r'\bdep\("([^"]+)"\)', cli_text))
+    local_manifest_path = local_path / 'manifest.json'
+    if deps_used and local_manifest_path.exists():
+        declared = set((json.load(open(local_manifest_path)).get('dependencies') or {}).keys())
+        missing = deps_used - declared
+        if missing:
+            print(f"ERROR: {p['id']} CLI 引用共享依赖 {sorted(missing)} 但 manifest.dependencies 未声明——"
+                  f"请补充后重新运行 ./scripts/package-plugins.sh")
+            errors += 1
+
+    # 7b. 隐式依赖启发式门禁:yt-dlp 在合并/提取/转封装时内部经 PATH 调用 ffmpeg,
+    #     dep() 字面扫描覆盖不到这类隐式依赖(CLI 无 dep("ffmpeg") 也实际需要)。
+    #     规则:声明了 yt-dlp 且 CLI 出现触发参数 → 必须声明 ffmpeg,否则安装期不下载、
+    #     运行期 yt-dlp 报 "ffmpeg not found"。(7 门禁的互补兜底,防未来新插件漏声明)
+    if local_manifest_path.exists():
+        declared = set((json.load(open(local_manifest_path)).get('dependencies') or {}).keys())
+        if 'yt-dlp' in declared:
+            ffmpeg_triggers = ('--merge-output-format', '--extract-audio', '--audio-format',
+                               '--remux-video', '--convert-subs', '"-x"', "'-x'")
+            hit = [t for t in ffmpeg_triggers if t in cli_text]
+            if hit and 'ffmpeg' not in declared:
+                print(f"ERROR: {p['id']} CLI 使用 yt-dlp 的 ffmpeg 触发参数 {hit} 但 manifest.dependencies "
+                      f"未声明 ffmpeg——yt-dlp 合并/提取/转封装内部调用 ffmpeg,请声明后重新打包")
+                errors += 1
+
     zip_path = pathlib.Path(plugin_dir) / f"{p['id']}-{p['version']}.zip"
     if not zip_path.exists():
         print(f"WARN: 未找到 {zip_path}(本地无打包产物时跳过 sha256 校验)")
@@ -95,5 +130,5 @@ for p in datas[0]:
 if errors:
     print(f"ERROR: {errors} 处校验失败")
     sys.exit(1)
-print("OK: 清单一致,插件包 sha256 校验通过,本地/zip 内 manifest 版本与清单一致,共享模块与源码一致")
+print("OK: 清单一致,插件包 sha256 校验通过,本地/zip 内 manifest 版本与清单一致,共享模块与源码一致,依赖声明完整")
 PYEOF

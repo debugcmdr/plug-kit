@@ -8,7 +8,8 @@
   "tags": ["video", "audio", "image", "subtitle", "live", "playlist", "download", "yt-dlp"],
   "platforms": ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"],
   "dependencies": {
-    "yt-dlp": ">=2024.01.01"
+    "yt-dlp": ">=2024.01.01",
+    "ffmpeg": ">=6.0"
   },
   "bridgeVersion": ">=1.0.0",
   "entry": {

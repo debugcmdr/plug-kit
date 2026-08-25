@@ -15,13 +15,17 @@ import sys
 # 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
 try:
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error  # noqa: F401
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, ytdlp_extract_service, diagnose_ytdlp_error  # noqa: F401
 
 YTDLP = dep("yt-dlp")
+# ffmpeg 不在本 CLI 直接调用,但 yt-dlp 合并(--merge-output-format)/转封装时
+# 内部经 PATH 查找它——显式声明确保安装期下载注入,并让 verify-manifests 的
+# dep() 依赖门禁能覆盖到这条隐式依赖(与 download 插件对齐)。
+FFMPEG = dep("ffmpeg")
 
 def base_cmd(extra_args=()):
     """统一网络健壮性参数(与万能下载插件对齐):20s 超时 + 5 次重试 + 重试间隔。"""
@@ -31,11 +35,21 @@ def base_cmd(extra_args=()):
 # ---------------------------------------------------------------- 提取条目
 def list_playlist(url, cookies=""):
     """提取播放列表/频道条目列表(flat 模式,只拿标题/时长/链接,速度快)。"""
+    # 解析加速:优先常驻服务(冷启动只付一次 + 元数据缓存,重复解析秒回);
+    # 服务返回解析失败 → 直接报错;服务链路不可用 → 降级直连(行为与历史一致)。
+    svc = ytdlp_extract_service(url, cookies, "flat")
+    if svc and "data" in svc:
+        _build_list_result(svc["data"])
+        return
+    if svc and "error_code" in svc:
+        error(svc["error_code"], svc["error_message"])
+        return
+    # 降级:直连 yt-dlp(现状路径)
     cmd = base_cmd(["--flat-playlist", "--no-warnings", "-J", url]) + cookies_args(cookies)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     except subprocess.TimeoutExpired:
-        error("TIMEOUT", "提取超时(yt-dlp 在 120s 内未取得列表元数据,可能是站点反爬或地区限制)。可重试或换链接。")
+        error("TIMEOUT", "提取超时(yt-dlp 在 180s 内未取得列表元数据,可能是站点反爬或地区限制)。可重试或换链接。")
         return
     except FileNotFoundError:
         error("YTDLP_MISSING", "未找到 yt-dlp,请先安装共享依赖")
@@ -54,6 +68,12 @@ def list_playlist(url, cookies=""):
             error("PARSE_ERROR", "无法解析 yt-dlp 输出")
             return
 
+    # 直连成功:meta 已就绪,与服务共用构造逻辑
+    _build_list_result(meta)
+
+
+def _build_list_result(meta):
+    """从 yt-dlp extract_info 结果(dict)构造播放列表响应(服务与直连共用)。"""
     entries = []
     for idx, e in enumerate(meta.get("entries") or [], start=1):
         # flat 模式下条目可能是 {_type:'url', ...} 或嵌套播放列表,跳过非直接条目
@@ -137,8 +157,6 @@ def _run_download(cmd, url, out_dir, message_prefix=""):
             file_name = os.path.basename(dst)
             if dst not in dest_files:
                 dest_files.append(dst)
-        elif line.startswith("[download] 100%"):
-            progress(100, message="单集完成", file_name=file_name, output_path=base_dir)
         elif "has already been downloaded" in line:
             progress(100, message="已存在,跳过", file_name=file_name, output_path=base_dir)
         elif line.startswith("ERROR") or "Error" in line or "error" in line:
@@ -164,8 +182,10 @@ def _run_download(cmd, url, out_dir, message_prefix=""):
 def download(url, items, quality, output_dir, cookies=""):
     """批量下载。items: yt-dlp --playlist-items 语法("1-3,5")或空=全部。"""
     os.makedirs(output_dir, exist_ok=True)
-    # 按播放列表名建目录 + 序号前缀(借鉴成熟方案的组织方式)
-    pattern = os.path.join(output_dir, "%(playlist_title)s/%(playlist_index)s-%(title)s.%(ext)s")
+    # 按播放列表名建目录 + 序号前缀(借鉴成熟方案的组织方式)。
+    # %(field|默认)s:非列表 URL(单视频)时 playlist_title/index 缺失 → 回退
+    # 「单视频/1-」,避免 yt-dlp 输出字面量 NA 产生 "NA/NA-标题.mp4" 坏文件名。
+    pattern = os.path.join(output_dir, "%(playlist_title|单视频)s/%(playlist_index|1)s-%(title)s.%(ext)s")
 
     if quality and quality != "best":
         h = re.sub(r"\D", "", quality)
@@ -177,7 +197,9 @@ def download(url, items, quality, output_dir, cookies=""):
     else:
         fmt = "bestvideo+bestaudio/best"
 
-    cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
+    # 与 download 插件的 _run_ytdlp 一致:统一注入网络健壮性参数(P-1)——批量下载
+    # 集数多、耗时长,抖动的网络(国内访问境外/反爬站点)下默认超时极易中途失败。
+    cmd = base_cmd(["--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern])
     if items and items is not True and str(items).strip():
         cmd += ["--playlist-items", str(items).strip()]
     cmd += cookies_args(cookies) + [url]
@@ -187,6 +209,21 @@ def download(url, items, quality, output_dir, cookies=""):
 
 
 # ---------------------------------------------------------------- 导出清单
+def _unique_path(path):
+    """已存在则追加 (1)(2)… 序号,绝不覆盖已有导出文件(P-6)。
+    与 convert 的 _reserve_path 语义一致,但这里是导出场景(非原子占位,仅防覆盖)。"""
+    if not os.path.exists(path):
+        return path
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    base, ext = os.path.splitext(os.path.basename(path))
+    i = 1
+    while True:
+        cand = os.path.join(d, f"{base} ({i}){ext}")
+        if not os.path.exists(cand):
+            return cand
+        i += 1
+
+
 def export(url, output_dir, cookies="", mode="full"):
     """导出播放列表清单。
 
@@ -235,7 +272,7 @@ def export(url, output_dir, cookies="", mode="full"):
         # 纯链接模式:每行一个 URL
         urls = [e.get("url") or e.get("webpage_url") or "" for e in entries]
         urls = [u for u in urls if u]
-        path = os.path.join(output_dir, f"{safe}-链接.txt")
+        path = _unique_path(os.path.join(output_dir, f"{safe}-链接.txt"))
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(urls) + ("\n" if urls else ""))
         result({
@@ -274,7 +311,7 @@ def export(url, output_dir, cookies="", mode="full"):
             vc if vc is not None else "",
             e.get("url") or e.get("webpage_url") or "",
         ])
-    path = os.path.join(output_dir, f"{safe}-清单.csv")
+    path = _unique_path(os.path.join(output_dir, f"{safe}-清单.csv"))
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         csv.writer(f).writerows(rows)
     result({

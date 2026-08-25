@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -66,7 +66,8 @@ async fn kill_process_tree(child: &mut Child) {
                 .args(["-TERM", &format!("-{}", pid)])
                 .status();
             // 给组内成员 200ms 优雅退出,再补 SIGKILL 防残留
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            // (用异步 sleep 而非 thread::sleep:后者会阻塞 tokio worker 线程,R-5)
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &format!("-{}", pid)])
                 .status();
@@ -374,17 +375,31 @@ impl ToolRunner {
         let final_outcome = serde_json::from_str::<PluginOutput>(&last);
         match &final_outcome {
             Ok(PluginOutput::Error(e)) => {
+                // 错误码随 message 一并上抛(G-1):任务中心/插件 UI 此前只能拿到
+                // message 被迫字符串匹配;带 [CODE] 前缀后三级链路均可按码识别。
+                // (message 原文保留,插件 UI 对 "完全磁盘访问" 等内容匹配不受影响)
+                let prefixed = format!("[{}] {}", e.code, e.message);
                 crate::task_queue::TaskQueue::update_status_with_error(
                     &task_id,
                     crate::task_queue::TaskStatus::Failed,
-                    Some(e.message.clone()),
+                    Some(prefixed.clone()),
                 ).await;
                 log::error!("[{}] plugin error: {}", task_id, e.message);
                 // 落盘日志页:结构化任务错误(错误码 + 完整 message,比插件 UI 更详细)。
                 crate::logger::Logger::task_error(&plugin_id, &task_id, &e.code, &e.message);
             }
-            Ok(PluginOutput::Result(_)) => {
-                crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Completed).await;
+            Ok(PluginOutput::Result(r)) => {
+                if r.success {
+                    crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Completed).await;
+                } else {
+                    // 协议允许 success=false 的 result 行:按失败处理,不能标记 Completed。
+                    let msg = "插件返回 success=false".to_string();
+                    crate::task_queue::TaskQueue::update_status_with_error(
+                        &task_id, crate::task_queue::TaskStatus::Failed, Some(msg.clone()),
+                    ).await;
+                    log::error!("[{}] {}", task_id, msg);
+                    crate::logger::Logger::task_error(&plugin_id, &task_id, "RESULT_FAILED", &msg);
+                }
             }
             _ => {
                 // 协议违规:最后一行不是 result/error(如 progress 行或不可解析输出)。
@@ -405,7 +420,7 @@ impl ToolRunner {
 
         match final_outcome {
             Ok(PluginOutput::Result(r)) => Ok(r.data),
-            Ok(PluginOutput::Error(e)) => Err(e.message),
+            Ok(PluginOutput::Error(e)) => Err(format!("[{}] {}", e.code, e.message)),
             _ => Err("插件输出协议违规:最后一行应为 result 或 error".to_string()),
         }
     }
@@ -436,16 +451,25 @@ impl ToolRunner {
             }
             // Pause requested: suspend the process (and its group), then wait for resume.
             if watch_pause && pause_flag.load(Ordering::SeqCst) {
-                suspend_process(child);
-                while pause_flag.load(Ordering::SeqCst) {
-                    if cancel_flag.load(Ordering::SeqCst) {
-                        // 先恢复再取消:SIGKILL 对被 STOP 的进程无效
-                        resume_process(child);
-                        return ProcessOutcome { success: false, code: -1, killed: Some("Task cancelled".into()) };
+                // 仅当进程还存活才暂停:若任务在暂停请求到达前已结束,对死进程
+                // SIGSTOP 后等 resume 会永久卡死(任务永不进入终态,须用户手动恢复)。
+                let alive = matches!(child.try_wait(), Ok(None));
+                if alive {
+                    suspend_process(child);
+                    while pause_flag.load(Ordering::SeqCst) {
+                        if cancel_flag.load(Ordering::SeqCst) {
+                            // 先恢复再取消:SIGKILL 对被 STOP 的进程无效
+                            resume_process(child);
+                            return ProcessOutcome { success: false, code: -1, killed: Some("Task cancelled".into()) };
+                        }
+                        // 暂停期间进程自行退出(崩溃/被外部终止)→ 不再等 resume,交由下方 try_wait 收尾
+                        if matches!(child.try_wait(), Ok(Some(_))) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    resume_process(child);
                 }
-                resume_process(child);
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -482,6 +506,10 @@ impl ToolRunner {
         let dc = crate::dependency_cache::DependencyCache::new();
         let platform = crate::dep_manifest::current_platform();
         let mut unavailable: Vec<String> = Vec::new();
+        // 收集「来自共享缓存的依赖所在目录」,循环后前置注入 PATH——yt-dlp 等子进程
+        // (及其派生的 ffmpeg/ffprobe)靠 PATH 查找可执行文件,仅注入 PLUGKIT_* 环境变量
+        // 并不够(yt-dlp 不读它)。系统 PATH 已可用的依赖(裸名)无需收集。
+        let mut dep_dirs: Vec<std::path::PathBuf> = Vec::new();
         for name in deps.keys() {
             let key = format!("PLUGKIT_{}", name.to_uppercase().replace('-', "_"));
             // 系统 PATH 已可用(如 ffmpeg)→ 直接复用,免下载
@@ -492,13 +520,25 @@ impl ToolRunner {
             // 运行时只查共享缓存(不递增引用计数——引用关系在「安装」时已登记,
             // 卸载按 refs 扫描递减,两侧严格对称;若此处再递增会导致孤儿依赖残留)。
             if let Some(cached) = dc.find_cached_any_version(name, &platform) {
+                if let Some(dir) = cached.parent() {
+                    if !dep_dirs.iter().any(|d| d == dir) {
+                        dep_dirs.push(dir.to_path_buf());
+                    }
+                }
                 envs.push((key, cached.to_string_lossy().to_string()));
                 continue;
             }
             // 缓存完全不存在(如安装后缓存被手动删除)→ 兜底重新安装(下载 + 登记引用)。
             // 此时登记的引用会在卸载时被 decrement_refcount_for_plugin 正确回收。
             match dc.ensure_dependency(name, plugin_id).await {
-                Ok(path) => envs.push((key, path.to_string_lossy().to_string())),
+                Ok(path) => {
+                    if let Some(dir) = path.parent() {
+                        if !dep_dirs.iter().any(|d| d == dir) {
+                            dep_dirs.push(dir.to_path_buf());
+                        }
+                    }
+                    envs.push((key, path.to_string_lossy().to_string()))
+                }
                 Err(e) => {
                     // 彻底不可用(无 PATH、无缓存、下载失败):收集,稍后任务直接报失败,
                     // 而非静默进入插件再报笼统的 YTDLP_MISSING。
@@ -506,6 +546,20 @@ impl ToolRunner {
                     unavailable.push(name.clone());
                 }
             }
+        }
+        // 依赖目录前置注入 PATH(子进程继承):yt-dlp 合并/提取时内部 spawn 的
+        // ffmpeg/ffprobe 据此找到可执行文件。共享缓存目录在 PATH 最前,不覆盖
+        // 用户原有 PATH。
+        if !dep_dirs.is_empty() {
+            let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+            let mut parts: Vec<String> = dep_dirs
+                .iter()
+                .map(|d| d.to_string_lossy().to_string())
+                .collect();
+            if let Ok(cur) = std::env::var("PATH") {
+                parts.push(cur);
+            }
+            envs.push(("PATH".to_string(), parts.join(sep)));
         }
         if !unavailable.is_empty() {
             return Err(format!(
@@ -552,6 +606,20 @@ impl ToolRunner {
             else if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "linux-x64" }
             else { "unknown" };
 
+        // 模板中出现的占位符集合(替换前):strip 阶段只清理"模板存在但参数未提供"的
+        // 占位符,绝不能对任意 {identifier} 下手——用户文件路径里的 {1} 等花括号
+        // 文本会被误删(R-7)。
+        let template_keys: std::collections::HashSet<String> = args
+            .iter()
+            .flat_map(|a| extract_template_placeholders(a))
+            .collect();
+        let provided: std::collections::HashSet<String> = match params {
+            Value::Object(map) => map.keys().cloned().collect(),
+            _ => std::collections::HashSet::new(),
+        };
+        let unfilled: std::collections::HashSet<String> =
+            template_keys.difference(&provided).cloned().collect();
+
         args.iter()
             .map(|arg| {
                 let mut result = arg.clone();
@@ -568,7 +636,7 @@ impl ToolRunner {
                 }
                 // 未提供的参数占位符(如 {output_dir} 为空)替换为空,避免字面量残留
                 // 例: --output-dir {output_dir} → --output-dir ""(插件端回退默认路径)
-                result = strip_unfilled_placeholders(&result);
+                result = strip_unfilled_placeholders(&result, &unfilled);
                 result
             })
             .collect()
@@ -583,6 +651,9 @@ impl ToolRunner {
         output_mode: String,
     ) -> Vec<String> {
         let mut reader = BufReader::new(reader);
+        // 只保留末尾 MAX_KEPT_LINES 行(R-6):最终只用最后一行(result/error),
+        // 长任务(数小时下载)会输出数千条 progress,全量累积纯属内存浪费。
+        const MAX_KEPT_LINES: usize = 100;
         let mut lines = Vec::new();
         let mut line = String::new();
         loop {
@@ -623,6 +694,9 @@ impl ToolRunner {
                             }
                         }
                     }
+                    if lines.len() >= MAX_KEPT_LINES {
+                        lines.remove(0);
+                    }
                     lines.push(trimmed);
                 }
                 Err(_) => break,
@@ -631,14 +705,22 @@ impl ToolRunner {
         lines
     }
 
+    /// 读取并丢弃 stderr(R-6):stderr 数据从不被使用(诊断靠插件 stdout 的 error 行),
+    /// 读取只是为了排空管道防止子进程写阻塞;全量 read_to_string 会白白累积内存。
     async fn read_stderr(
         reader: impl AsyncRead + Unpin + Send + 'static,
     ) -> Result<String, String> {
         let mut reader = BufReader::new(reader);
-        let mut output = String::new();
-        reader.read_to_string(&mut output).await
-            .map_err(|e| format!("Failed to read stderr: {}", e))?;
-        Ok(output)
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => return Err(format!("Failed to read stderr: {}", e)),
+            }
+        }
+        Ok(String::new())
     }
 }
 
@@ -648,12 +730,36 @@ struct ProcessOutcome {
     killed: Option<String>,
 }
 
-/// 把字符串里残留的 `{name}` 占位符替换为空(未提供的参数)。
+/// 提取字符串中的占位符名集合(`{name}`,name 为字母数字/下划线)。
+/// 用于确定 manifest 模板中"声明了哪些占位符"。
+fn extract_template_placeholders(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('{') {
+        let tail = &rest[open..];
+        if let Some(close_rel) = tail[1..].find('}') {
+            let name = &tail[1..1 + close_rel];
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                out.push(name.to_string());
+                rest = &tail[1 + close_rel + 1..];
+                continue;
+            }
+        }
+        rest = &tail[1..];
+    }
+    out
+}
+
+/// 把字符串里残留的 `{name}` 占位符替换为空,但**仅限 `unfilled` 集合中的键**
+/// (即 manifest 模板声明过、本次调用未提供的参数)。
 ///
 /// ⚠️ 必须按 UTF-8 字符边界处理,不能逐字节重建字符串:
 /// 旧实现用 `bytes[i] as char` 逐字节转码,会把中文等多字节字符拆坏
 /// (曾导致中文路径变成乱码,插件报"输入文件不存在")。
-fn strip_unfilled_placeholders(s: &str) -> String {
+///
+/// ⚠️ 不能对任意 {identifier} 一律删除(R-7):用户输入的文件路径/标题里含
+/// `{1}` 等花括号文本(如 "报告{2}版.mp4")会被误删改写路径——只有模板占位符才删。
+fn strip_unfilled_placeholders(s: &str, unfilled: &std::collections::HashSet<String>) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while !rest.is_empty() {
@@ -670,13 +776,16 @@ fn strip_unfilled_placeholders(s: &str) -> String {
                 // 尝试匹配 {identifier}
                 if let Some(close_rel) = tail[1..].find('}') {
                     let name = &tail[1..1 + close_rel];
-                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                        // 是占位符 → 整个跳过
+                    let is_placeholder = !name.is_empty()
+                        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        && unfilled.contains(name);
+                    if is_placeholder {
+                        // 是"未填充的模板占位符" → 整个跳过
                         rest = &tail[1 + close_rel + 1..];
                         continue;
                     }
                 }
-                // 不是占位符(如普通文本里的花括号)→ 保留这个 '{' 并继续
+                // 非模板占位符(用户路径/普通文本里的花括号)→ 保留这个 '{' 并继续
                 out.push('{');
                 rest = &tail[1..];
             }
@@ -688,30 +797,53 @@ fn strip_unfilled_placeholders(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn set(keys: &[&str]) -> HashSet<String> {
+        keys.iter().map(|s| s.to_string()).collect()
+    }
 
     #[test]
     fn strip_keeps_utf8_chinese_path_intact() {
         // 回归:中文等多字节字符不能被逐字节拆坏(曾导致"输入文件不存在")
         let path = "/Users/main/Documents/备用文件/fc2-ppv-1637514-HD/fc2-ppv-1637514-nyap2p.com.mp4";
-        assert_eq!(strip_unfilled_placeholders(path), path);
+        assert_eq!(strip_unfilled_placeholders(path, &set(&[])), path);
     }
 
     #[test]
     fn strip_removes_placeholder_only() {
-        assert_eq!(strip_unfilled_placeholders("--output-dir {output_dir}"), "--output-dir ");
-        assert_eq!(strip_unfilled_placeholders("{output_dir}"), "");
-        assert_eq!(strip_unfilled_placeholders("--quality {quality} --input {input}"), "--quality  --input ");
+        assert_eq!(strip_unfilled_placeholders("--output-dir {output_dir}", &set(&["output_dir"])), "--output-dir ");
+        assert_eq!(strip_unfilled_placeholders("{output_dir}", &set(&["output_dir"])), "");
+        assert_eq!(
+            strip_unfilled_placeholders("--quality {quality} --input {input}", &set(&["quality", "input"])),
+            "--quality  --input "
+        );
     }
 
     #[test]
     fn strip_keeps_non_placeholder_braces_and_mixed() {
         // 含空格/连字符的 {…} 不是 identifier 占位符 → 保留
-        assert_eq!(strip_unfilled_placeholders("a{b c}d"), "a{b c}d");
-        assert_eq!(strip_unfilled_placeholders("a{x-y}d"), "a{x-y}d");
-        // 中文 + 占位符混合(中文是 alphanumeric,算占位符)
+        assert_eq!(strip_unfilled_placeholders("a{b c}d", &set(&[])), "a{b c}d");
+        assert_eq!(strip_unfilled_placeholders("a{x-y}d", &set(&[])), "a{x-y}d");
+        // 中文 + 占位符混合(中文是 alphanumeric,算占位符);{dir} 在 unfilled 中才删
         assert_eq!(
-            strip_unfilled_placeholders("下载到{dir}/备用文件夹"),
+            strip_unfilled_placeholders("下载到{dir}/备用文件夹", &set(&["dir"])),
             "下载到/备用文件夹"
         );
+    }
+
+    #[test]
+    fn strip_keeps_user_path_braces_not_in_template() {
+        // R-7 回归:用户文件路径中的 {数字} 等花括号文本不属于模板占位符 → 必须保留
+        let path = "/a/报告{2}最终版.mp4";
+        assert_eq!(strip_unfilled_placeholders(path, &set(&["output"])), path);
+        assert_eq!(strip_unfilled_placeholders(path, &set(&[])), path);
+    }
+
+    #[test]
+    fn extract_template_keys_collects_identifiers() {
+        let keys = extract_template_placeholders("--input {input} --output {output_dir} {x-y} {1}");
+        assert_eq!(keys, vec!["input", "output_dir", "1"]);
+        // 非 identifier({x-y})不收集
     }
 }

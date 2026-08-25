@@ -138,14 +138,26 @@ export async function resumeTask(taskId: string): Promise<void> {
   await fetchTasks()
 }
 
-let taskPollTimer: ReturnType<typeof setInterval> | null = null
+let taskPollTimer: ReturnType<typeof setTimeout> | null = null
+
+// 轮询间隔:有活跃任务(运行/排队/暂停)3s 高频刷新;空闲时降频到 15s(F-4),
+// 避免"任务面板从没打开过"也永远 3s 全量拉取后端任务列表。
+const TASK_POLL_ACTIVE_MS = 3000
+const TASK_POLL_IDLE_MS = 15000
 
 export function startTaskPoll() {
   if (taskPollTimer) return
-  fetchTasks()
-  taskPollTimer = setInterval(fetchTasks, 3000)
+  const poll = () => {
+    fetchTasks().then(() => {
+      const hasActive = tasks.value.some(t =>
+        t.status === 'running' || t.status === 'pending' || t.status === 'paused'
+      )
+      taskPollTimer = setTimeout(poll, hasActive ? TASK_POLL_ACTIVE_MS : TASK_POLL_IDLE_MS)
+    })
+  }
+  poll()
 }
 
 export function stopTaskPoll() {
-  if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null }
+  if (taskPollTimer) { clearTimeout(taskPollTimer); taskPollTimer = null }
 }

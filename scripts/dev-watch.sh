@@ -30,7 +30,7 @@ dir_hash() {
     if [[ -d "$ROOT/plugins/shared" ]]; then
       (cd "$ROOT/plugins/shared" && find . -type f | sort | xargs -I{} sh -c 'stat -c "%Y %n" "{}" 2>/dev/null || stat -f "%m %N" "{}"')
     fi
-  } | md5 | awk '{print $1}'
+  } | (md5 2>/dev/null || md5sum) | awk '{print $1}'   # T-1:兼容 macOS md5 与 Linux md5sum
 }
 
 sync_plugin() {

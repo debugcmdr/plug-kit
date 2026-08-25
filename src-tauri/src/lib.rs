@@ -297,22 +297,23 @@ async fn list_tasks() -> Result<Vec<serde_json::Value>, String> {
 /// 任务控制(外壳任务中心专用,独立于插件桥接通道)。
 /// 插件 iframe 仍可通过 bridge 的 task_cancel/task_pause/task_resume
 /// 管理自己的任务,两者都落到 TaskQueue 的同一实现。
+/// 返回实际操作结果(任务不存在/已终态 → false),不再无条件报成功。
 #[tauri::command]
 async fn cancel_task(task_id: String) -> Result<serde_json::Value, String> {
-    task_queue::TaskQueue::cancel(&task_id).await;
-    Ok(serde_json::json!({ "cancelled": true }))
+    let cancelled = task_queue::TaskQueue::cancel(&task_id).await;
+    Ok(serde_json::json!({ "cancelled": cancelled }))
 }
 
 #[tauri::command]
 async fn pause_task(task_id: String) -> Result<serde_json::Value, String> {
-    task_queue::TaskQueue::pause(&task_id).await;
-    Ok(serde_json::json!({ "paused": true }))
+    let paused = task_queue::TaskQueue::pause(&task_id).await;
+    Ok(serde_json::json!({ "paused": paused }))
 }
 
 #[tauri::command]
 async fn resume_task(task_id: String) -> Result<serde_json::Value, String> {
-    task_queue::TaskQueue::resume(&task_id).await;
-    Ok(serde_json::json!({ "resumed": true }))
+    let resumed = task_queue::TaskQueue::resume(&task_id).await;
+    Ok(serde_json::json!({ "resumed": resumed }))
 }
 
 #[tauri::command]
@@ -330,7 +331,6 @@ fn log_error(msg: String) {
 /// `level`: 过滤级别,空则全部。
 #[tauri::command]
 async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<String>, String> {
-    use std::io::{BufRead, BufReader};
     let n = lines.unwrap_or(200).min(2000);
     let level_filter = level.as_deref();
 
@@ -357,13 +357,10 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
 
     let mut all_lines: Vec<String> = Vec::new();
     for file in files {
-        let reader = BufReader::new(
-            std::fs::File::open(&file).map_err(|e| format!("打开日志文件: {}", e))?
-        );
-        let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?;
-        lines.reverse();
-        for line in lines {
+        // 只读文件尾部(R-21):整文件读入内存再 reverse 在日志增长后内存峰值高,
+        // 日志页最多取 2000 行,尾部 256KB 已远超所需。
+        let tail_lines = read_log_tail(&file, n)?;
+        for line in tail_lines {
             if line.is_empty() { continue; }
             if let Some(lv) = level_filter {
                 // 行格式 `[2026-08-23 19:53:00] [LEVEL] msg`:匹配行内的 [LEVEL] 标记
@@ -381,6 +378,34 @@ async fn log_read(lines: Option<usize>, level: Option<String>) -> Result<Vec<Str
     }
     all_lines.reverse();
     Ok(all_lines)
+}
+
+/// 读取日志文件**尾部**最多 `max_lines` 行(从文件末尾 seek 回读,不整读)。
+/// 返回的行按文件内顺序(旧→新);首行可能是不完整行(seek 落在行中间),丢弃。
+fn read_log_tail(path: &std::path::Path, max_lines: usize) -> Result<Vec<String>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL_BYTES: u64 = 256 * 1024; // 最多回读 256KB,覆盖绝大多数日志
+    let meta = std::fs::metadata(path).map_err(|e| format!("日志元信息: {}", e))?;
+    let size = meta.len();
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    let mut f = std::fs::File::open(path).map_err(|e| format!("打开日志文件: {}", e))?;
+    let start = size.saturating_sub(TAIL_BYTES);
+    f.seek(SeekFrom::Start(start))
+        .map_err(|e| format!("seek 日志: {}", e))?;
+    let mut buf = Vec::with_capacity((size - start) as usize);
+    f.read_to_end(&mut buf)
+        .map_err(|e| format!("读日志: {}", e))?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    // seek 起点可能落在某行中间:若非文件开头,丢弃第一段不完整行
+    if start > 0 && !lines.is_empty() && !text.starts_with('\n') {
+        lines.remove(0);
+    }
+    lines.reverse();
+    lines.truncate(max_lines);
+    Ok(lines.into_iter().map(|s| s.to_string()).collect())
 }
 
 /// 清理依赖缓存(~/.plugkit/cache/deps)中残留的 download.tmp(中断下载)。

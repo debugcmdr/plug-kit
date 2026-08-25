@@ -7,12 +7,22 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use once_cell::sync::Lazy;
 
-/// 共享 HTTP 客户端(依赖下载用，120s 超时)。
+/// 共享 HTTP 客户端(依赖下载用，120s 超时——仅覆盖小请求/校验和等短操作)。
 pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .expect("reqwest client build failed")
+});
+
+/// 大文件下载专用客户端(R-4):**不设整体超时**(Client::timeout 覆盖整个请求含 body,
+/// 慢网下载 200MB ffmpeg 会被 120s 上限误杀),仅连接超时;chunk 读取由
+/// download_and_verify 内每块读超时兜底(挂起 60s 无数据即中止)。
+pub static DOWNLOAD_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("download client build failed")
 });
 
 /// 依赖下载硬上限(单个文件,全局):1 GiB。
@@ -51,6 +61,9 @@ impl DependencyCache {
     }
 
     pub async fn clean_orphans(&self) -> Result<serde_json::Value, String> {
+        // 与 install_dependency/decrement_refcount 同用文件锁(R-20):无锁的
+        // 读-改-写会与并发安装互相覆盖 registry,导致引用计数丢失更新。
+        let _lock = self.acquire_lock()?;
         let mut registry = Registry::load_or_new(&self.registry_path)
             .map_err(|e| e.to_string())?;
         
@@ -392,7 +405,8 @@ impl DependencyCache {
         original_url: &str,
         binary_name: &str,
     ) -> Result<(), String> {
-        let resp = HTTP_CLIENT.get(src)
+        // 大文件用 DOWNLOAD_CLIENT(无整体超时,见 R-4);连接 20s 超时由 client 兜底。
+        let resp = DOWNLOAD_CLIENT.get(src)
             .send()
             .await
             .map_err(|e| format!("Download failed: {}", e))?;
@@ -412,16 +426,35 @@ impl DependencyCache {
         };
 
         // 流式下载:逐 chunk 写 tmp + 增量哈希(内存恒定,不收集全部块)。
+        // 用 DOWNLOAD_CLIENT(无整体超时)发请求;每个 chunk 加 60s 读超时,
+        // 防服务器挂起不吐数据(R-4:整体 120s 超时会让慢网大文件下载必失败)。
         let tmp = dest.join("download.tmp");
         let mut out = fs::File::create(&tmp)
             .map_err(|e| format!("Create tmp file: {}", e))?;
         let mut resp = resp;
         let mut hasher = sha2::Sha256::new();
         let mut total: u64 = 0;
-        while let Some(chunk) = resp.chunk()
+        loop {
+            let chunk = match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                resp.chunk(),
+            )
             .await
-            .map_err(|e| format!("Read chunk failed: {}", e))?
-        {
+            {
+                Ok(Ok(Some(c))) => c,
+                Ok(Ok(None)) => break, // 正常读完
+                Ok(Err(e)) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("Read chunk failed: {}", e));
+                }
+                Err(_) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!(
+                        "下载读取超时(60s 无数据),已中止: {}",
+                        src
+                    ));
+                }
+            };
             total += chunk.len() as u64;
             // 硬上限:超过阈值立即中止(chunk 循环退出即放弃后续读取 = abort http),
             // 删除临时文件并返回错误。

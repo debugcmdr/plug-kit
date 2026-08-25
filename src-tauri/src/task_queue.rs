@@ -45,6 +45,33 @@ pub enum TaskStatus {
     Interrupted,
 }
 
+/// 状态机合法迁移表(G-5)。终态(Completed/Failed/Cancelled/Interrupted)不可再迁移;
+/// 幂等迁移(from == to)放行(recover 重复执行等场景)。
+fn can_transition(from: &TaskStatus, to: &TaskStatus) -> bool {
+    use TaskStatus::*;
+    if from == to {
+        return true;
+    }
+    matches!(
+        (from, to),
+        (Pending, Running)
+            | (Pending, Paused)
+            | (Pending, Failed)
+            | (Pending, Cancelled)
+            | (Pending, Interrupted)
+            | (Running, Paused)
+            | (Running, Completed)
+            | (Running, Failed)
+            | (Running, Cancelled)
+            | (Running, Interrupted)
+            | (Paused, Running)
+            | (Paused, Completed) // 暂停期间进程自行退出(R-2 修复路径)
+            | (Paused, Failed)
+            | (Paused, Cancelled)
+            | (Paused, Interrupted)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskProgress {
     pub percent: f64,
@@ -157,9 +184,18 @@ impl TaskQueue {
     }
 
     /// 更新任务状态,并可选记录失败原因(任务中心直接展示)。
+    /// 状态机校验(G-5):非法迁移(如 Completed→Running)静默忽略,防状态回退/
+    /// 错乱(此前 update_status 可任意设置,暂停死循环等状态不一致问题的根因之一)。
     pub async fn update_status_with_error(task_id: &str, status: TaskStatus, error: Option<String>) {
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
+            if !can_transition(&task.status, &status) {
+                log::warn!(
+                    "[{}] 非法状态迁移: {:?} -> {:?},忽略",
+                    task_id, task.status, status
+                );
+                return;
+            }
             task.status = status.clone();
             if let Some(e) = error {
                 task.error = Some(e);
@@ -230,7 +266,8 @@ impl TaskQueue {
     /// Cancel a task: mark Cancelled AND request the running subprocess be killed
     /// via the global task registry (fixes cancel that only changed status).
     /// 仅活跃任务(pending/running/paused)可取消;终态任务忽略,避免非法状态迁移。
-    pub async fn cancel(task_id: &str) {
+    /// 返回是否真正执行了取消(任务不存在/已是终态 → false)。
+    pub async fn cancel(task_id: &str) -> bool {
         // 通知 ToolRunner 杀子进程(若该任务正在运行)
         let _ = crate::task_registry::request_cancel(task_id).await;
 
@@ -240,14 +277,16 @@ impl TaskQueue {
                 task.status = TaskStatus::Cancelled;
                 task.completed_at = Some(chrono::Utc::now().to_rfc3339());
                 queue.save().unwrap_or(());
+                return true;
             }
         }
+        false
     }
 
     /// Pause a task: 请求暂停子进程(SIGSTOP/挂起)+ 标记状态 Paused。
     /// 真实暂停,不是只改状态——ToolRunner 收到 pause 标志后暂停整个任务树。
-    /// 仅 pending/running 可暂停(已暂停幂等跳过)。
-    pub async fn pause(task_id: &str) {
+    /// 仅 pending/running 可暂停(已暂停幂等跳过)。返回是否真正执行了暂停。
+    pub async fn pause(task_id: &str) -> bool {
         // 通知 ToolRunner 暂停子进程(若该任务正在运行/排队)
         let _ = crate::task_registry::request_pause(task_id).await;
         let mut queue = TASK_QUEUE.lock().await;
@@ -255,13 +294,15 @@ impl TaskQueue {
             if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
                 task.status = TaskStatus::Paused;
                 queue.save().unwrap_or(());
+                return true;
             }
         }
+        false
     }
 
     /// Resume a paused task: 请求恢复子进程(SIGCONT)+ 标记状态 Running。
-    /// 仅 paused 可恢复。
-    pub async fn resume(task_id: &str) {
+    /// 仅 paused 可恢复。返回是否真正执行了恢复。
+    pub async fn resume(task_id: &str) -> bool {
         let _ = crate::task_registry::request_resume(task_id).await;
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
@@ -272,8 +313,10 @@ impl TaskQueue {
                     task.started_at = Some(chrono::Utc::now().to_rfc3339());
                 }
                 queue.save().unwrap_or(());
+                return true;
             }
         }
+        false
     }
 
     /// 任务历史保留期(天):终态任务超期自动清理,防止 tasks.json 无限增长。

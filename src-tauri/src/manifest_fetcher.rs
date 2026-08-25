@@ -110,69 +110,56 @@ pub fn invalidate_market_cache() {
 }
 
 /// Fetch the remote marketplace manifest from GitHub Raw.
-/// Tries the direct URL plus every configured mirror **in parallel** and
-/// returns the first successful (non-empty) response — so a slow/unreachable
-/// GitHub direct connection no longer blocks the market refresh (the old code
-/// did a serial 15s direct GET). Mirrors only apply to GitHub-hosted URLs.
+/// Tries the direct URL first, then each configured mirror **serially** and
+/// returns the first successful (non-empty) response — original-first ordering
+/// preserves trust (mirrors are untrusted proxies that could serve tampered
+/// manifests, see R-18; the old parallel first-wins ordering let a mirror
+/// become the authority). Mirrors only apply to GitHub-hosted URLs.
 async fn fetch_remote_manifests() -> Result<Vec<ManifestSummary>, String> {
     let base_url = std::env::var("PLUGKIT_MANIFEST_URL")
         .unwrap_or_else(|_| DEFAULT_MANIFEST_URL.to_string());
 
-    // 候选源:原始 URL + 镜像前缀(仅 GitHub 托管适用镜像前缀)。
+    // 候选源:原始 URL 在前,镜像在后(去重保序)。
+    // ⚠️ 顺序即信任:此前"多源并行、先到先用"会让公共代理镜像先返回的数据成为
+    // 市场权威——镜像可返回被篡改的清单(sha256 也是清单给的,全链路伪造),
+    // 且当前无签名验证(OFFICIAL_PUBLIC_KEY=None)。改串行且原始优先(R-18):
+    // 原始(官方 GitHub)成功即用;原始不可达(国内被墙超时)才逐个尝试镜像回退。
     let mut sources: Vec<String> = vec![base_url.clone()];
     if base_url.contains("githubusercontent.com") || base_url.contains("github.com") {
         for mirror in enabled_mirrors() {
             let m = mirror.trim_end_matches('/');
-            sources.push(format!("{}/{}", m, base_url));
+            let src = format!("{}/{}", m, base_url);
+            if !sources.contains(&src) {
+                sources.push(src);
+            }
         }
     }
-    sources.sort();
-    sources.dedup();
 
-    // 并行拉取所有候选源,谁先成功(non-empty)用谁。
-    let client = MARKET_CLIENT.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<ManifestSummary>>(sources.len().max(1));
-    let mut handles = Vec::with_capacity(sources.len());
+    let mut last_err = String::from("No manifest source attempted");
     for src in sources {
-        let client = client.clone();
-        let tx = tx.clone();
-        handles.push(tokio::spawn(async move {
-            match client.get(&src).send().await {
-                Ok(resp) => {
-                    if !resp.status().is_success() {
-                        return;
-                    }
-                    let bytes = match resp.bytes().await {
-                        Ok(b) => b,
-                        Err(_) => return,
-                    };
-                    let list: ManifestList = match serde_json::from_slice(&bytes) {
-                        Ok(l) => l,
-                        Err(_) => return,
-                    };
-                    if !list.plugins.is_empty() {
-                        let _ = tx.send(list.plugins).await;
-                    }
-                }
-                Err(_) => return,
-            }
-        }));
+        match fetch_single_manifest(&src).await {
+            Ok(Some(plugins)) if !plugins.is_empty() => return Ok(plugins),
+            Ok(_) => last_err = format!("{}: empty", src),
+            Err(e) => last_err = format!("{}: {}", src, e),
+        }
     }
+    Err(format!("All manifest sources failed: {}", last_err))
+}
 
-    match rx.recv().await {
-        Some(plugins) => {
-            for h in handles {
-                h.abort();
-            }
-            Ok(plugins)
-        }
-        None => {
-            for h in handles {
-                let _ = h.await;
-            }
-            Err("All manifest sources failed".into())
-        }
+/// 单源拉取市场清单;成功返回 Some(plugins),404/解析失败返回 Err。
+async fn fetch_single_manifest(src: &str) -> Result<Option<Vec<ManifestSummary>>, String> {
+    let resp = MARKET_CLIENT
+        .get(src)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
     }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let list: ManifestList =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse: {}", e))?;
+    Ok(Some(list.plugins))
 }
 
 /// Bundled fallback snapshot — compiled in, used when offline or first run.
@@ -260,14 +247,27 @@ pub async fn download_with_fallback(
 }
 
 async fn download_single(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
-    let resp = crate::dependency_cache::HTTP_CLIENT.get(url).send().await.map_err(|e| e.to_string())?;
+    // 插件包下载同样用 DOWNLOAD_CLIENT(无整体超时,慢网下 100MB 上限内不受 120s 误杀)
+    let resp = crate::dependency_cache::DOWNLOAD_CLIENT
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
     // 流式累计 + 大小上限(读取中即检查,超限 abort;插件包体积小,全量内存可接受)
     let mut resp = resp;
     let mut bytes = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+    loop {
+        let chunk = match tokio::time::timeout(std::time::Duration::from_secs(60), resp.chunk())
+            .await
+        {
+            Ok(Ok(Some(c))) => c,
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(_) => return Err(format!("下载读取超时(60s 无数据): {}", url)),
+        };
         bytes.extend_from_slice(&chunk);
         if bytes.len() as u64 > PLUGIN_ZIP_MAX_BYTES {
             return Err(format!(

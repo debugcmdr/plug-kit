@@ -101,7 +101,8 @@ fn normalize_absolute(path: &Path) -> Result<PathBuf, SecurityError> {
 pub fn validate_sha256(data: &[u8], expected: &str) -> Result<(), SecurityError> {
     use sha2::{Sha256, Digest};
     let actual = format!("{:x}", Sha256::digest(data));
-    if actual != expected {
+    // 十六进制比较统一小写(R-25):清单/脚本生成的哈希可能大写,大小写不敏感比较防误判
+    if actual.to_lowercase() != expected.trim().to_lowercase() {
         return Err(SecurityError::Sha256Mismatch {
             expected: expected.to_string(),
             actual,

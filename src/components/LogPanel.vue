@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import AppIcon from './AppIcon.vue'
 
@@ -15,6 +15,7 @@ interface LogItem {
 const items = ref<LogItem[]>([])
 const loading = ref(false)
 const autoScroll = ref(false)  // 默认手动滚动:用户主动查看/筛选日志时不被自动滚走
+const autoRefresh = ref(false) // 自动刷新(默认关,开启后 5s 轮询)——此前日志页只有手动刷新(F-5)
 const filterLevel = ref<string>('all')
 
 const LEVELS = [
@@ -24,7 +25,23 @@ const LEVELS = [
   { key: 'ERROR', label: 'ERROR' },
 ] as const
 
-onMounted(fetchLogs)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+function toggleAutoRefresh(on: boolean) {
+  autoRefresh.value = on
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  if (on) {
+    refreshTimer = setInterval(fetchLogs, 5000)
+  }
+}
+
+onMounted(() => {
+  fetchLogs()
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 
 async function fetchLogs() {
   loading.value = true
@@ -89,6 +106,14 @@ function lineClass(item: LogItem) {
           @click="autoScroll = !autoScroll"
         >
           {{ autoScroll ? '自动滚动' : '手动滚动' }}
+        </n-tag>
+        <n-tag
+          :type="autoRefresh ? 'success' : 'default'"
+          round size="small"
+          style="cursor:pointer; font-size:12px;"
+          @click="toggleAutoRefresh(!autoRefresh)"
+        >
+          {{ autoRefresh ? '自动刷新' : '自动刷新关' }}
         </n-tag>
       </n-space>
     </div>

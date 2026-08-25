@@ -20,36 +20,44 @@ impl PluginManager {
 
     pub async fn install(&self, plugin_id: &str) -> Result<crate::InstallResult, String> {
         // 1. Resolve binary URL + sha256 from market manifest (or local reinstall).
-        let market = crate::manifest_fetcher::fetch_market_manifests()
-            .await?
-            .into_iter()
-            .find(|m| m.id == plugin_id);
+        //    市场拉取失败(离线/被墙)不阻断安装(R-14):降级走本地重装分支——
+        //    若插件已安装,用其本地 manifest 的 binaryUrl 重装;未安装则报市场不可达。
+        let market = match crate::manifest_fetcher::fetch_market_manifests().await {
+            Ok(list) => list.into_iter().find(|m| m.id == plugin_id),
+            Err(e) => {
+                log::warn!("install '{}': market fetch failed ({}), fallback to local reinstall", plugin_id, e);
+                None
+            }
+        };
 
         // 版本守卫:已安装版本 >= 市场版本时拒绝重装(防降级/防无谓覆盖)。
+        // 版本解析失败(R-15):不能按 0.0.0 参与比较(会恒判"已是最新"而永久拒绝重装),
+        // 解析失败即视为"需重装"放行——交给后续下载校验兜底。
         if let Some(existing) = self.get_manifest(plugin_id).await? {
             if let Some(m) = &market {
-                let existing_ver = semver::Version::parse(&existing.version)
-                    .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
-                let market_ver = semver::Version::parse(&m.version)
-                    .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
-                if existing_ver >= market_ver {
-                    return Ok(crate::InstallResult {
-                        success: false,
-                        plugin_id: plugin_id.to_string(),
-                        message: format!(
-                            "已安装 {} v{}，市场最新为 v{}，无需重装（如需修复请先卸载）",
-                            plugin_id, existing.version, m.version
-                        ),
-                        code: Some("ALREADY_LATEST".into()),
-                        warnings: vec![],
-                    });
+                let guard = semver::Version::parse(&existing.version)
+                    .and_then(|ev| semver::Version::parse(&m.version).map(|mv| (ev, mv)))
+                    .ok();
+                if let Some((existing_ver, market_ver)) = guard {
+                    if existing_ver >= market_ver {
+                        return Ok(crate::InstallResult {
+                            success: false,
+                            plugin_id: plugin_id.to_string(),
+                            message: format!(
+                                "已安装 {} v{}，市场最新为 v{}，无需重装（如需修复请先卸载）",
+                                plugin_id, existing.version, m.version
+                            ),
+                            code: Some("ALREADY_LATEST".into()),
+                            warnings: vec![],
+                        });
+                    }
                 }
             }
         }
 
         let (binary_url, sha256, signature) = match &market {
             Some(m) => {
-                let platform = current_platform();
+                let platform = crate::dep_manifest::current_platform();
                 let url = m.binary_url.replace("{platform}", &platform);
                 (url, m.sha256.clone(), m.signature.clone())
             }
@@ -113,7 +121,11 @@ impl PluginManager {
             serde_json::from_str(&content)
                 .map_err(|e| format!("Parse extracted manifest: {}", e))?;
         let current = crate::bridge_version::CURRENT_BRIDGE_VERSION;
-        if let Err(_) = crate::bridge_version::check_bridge_version(&manifest.bridge_version, current) {
+        // 版本不匹配(Ok(false))与解析失败(Err)都必须拒绝——此前 `if let Err(_)`
+        // 只捕获解析错误,Ok(false)被放行导致不兼容插件被安装(与 preinstall.rs 对照)。
+        if !crate::bridge_version::check_bridge_version(&manifest.bridge_version, current)
+            .unwrap_or(false)
+        {
             let _ = fs::remove_dir_all(&tmp_dir);
             return Ok(crate::InstallResult {
                 success: false,
@@ -126,10 +138,12 @@ impl PluginManager {
         }
         // 主程序过旧时拒绝安装,提示升级主程序。
         if let Some(min_app) = &manifest.min_app_version {
-            if let Err(_) = crate::bridge_version::check_bridge_version(
+            if !crate::bridge_version::check_bridge_version(
                 &format!(">={}", min_app),
                 env!("CARGO_PKG_VERSION"),
-            ) {
+            )
+            .unwrap_or(false)
+            {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return Ok(crate::InstallResult {
                     success: false,
@@ -226,6 +240,10 @@ impl PluginManager {
             for entry in fs::read_dir(&self.plugins_dir).map_err(|e| e.to_string())? {
                 let entry = entry.map_err(|e| e.to_string())?;
                 let plugin_id = entry.file_name().to_string_lossy().to_string();
+                // 原子换装崩溃可能残留 {id}.old 目录:不是插件,跳过(R-16)
+                if plugin_id.ends_with(".old") {
+                    continue;
+                }
                 let manifest_path = entry.path().join("manifest.json");
                 
                 // 单个插件 manifest 损坏不应拖垮整个列表：跳过 + 记录日志。
@@ -419,19 +437,4 @@ fn common_top_dir(archive: &mut zip::ZipArchive<Cursor<&[u8]>>) -> Option<String
         }
     }
     common
-}
-
-/// Current platform string used for `{platform}` placeholder replacement.
-fn current_platform() -> String {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "windows-x64".to_string()
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "macos-arm64".to_string()
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "macos-x64".to_string()
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "linux-x64".to_string()
-    } else {
-        "unknown".to_string()
-    }
 }

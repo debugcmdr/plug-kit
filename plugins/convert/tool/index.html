@@ -20,8 +20,12 @@
     .cat.active { border-color: #3370ff; background: #f0f5ff; color: #3370ff; font-weight: 500; box-shadow: 0 0 0 3px rgba(51,112,255,.08); }
 
     label { display: block; font-size: 12px; color: #646a73; margin: 12px 0 6px; }
-    select { width: 100%; padding: 11px 13px; border: 1px solid #d0d3d9; border-radius: 9px; font-size: 14px; outline: none; background: #fff; transition: border-color .15s, box-shadow .15s; }
+    /* 下拉统一风格(视频/音频/图片三模块所有 select 共用):增加上下高度与行高,
+       文字垂直居中更舒展;option 行距加宽,展开列表选项不再紧贴(Windows/Chromium
+       生效,macOS 原生下拉忽略,无害)。 */
+    select { width: 100%; padding: 13px 14px; line-height: 1.4; border: 1px solid #d0d3d9; border-radius: 9px; font-size: 14px; outline: none; background: #fff; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
     select:focus { border-color: #3370ff; box-shadow: 0 0 0 3px rgba(51,112,255,.12); }
+    option { padding: 8px 10px; font-size: 14px; line-height: 1.5; }
     .row { display: flex; gap: 12px; }
     .row > div { flex: 1; }
 
@@ -101,12 +105,13 @@
         <select id="format"></select>
       </div>
       <div id="optQuality" class="hidden">
-        <label>质量</label>
+        <label>画质</label>
         <select id="quality">
-          <option value="90">90 (推荐)</option>
-          <option value="75">75</option>
-          <option value="60">60 (小体积)</option>
+          <option value="high">高画质 (推荐)</option>
+          <option value="medium">平衡</option>
+          <option value="low">小体积</option>
         </select>
+        <div class="hint">越高越清晰、文件越大（jpg / webp / avif / heic 有损格式）</div>
       </div>
     </div>
 
@@ -147,8 +152,9 @@
           <option value="mp3">mp3（重编码）</option>
           <option value="m4a">m4a（重编码）</option>
           <option value="wav">wav（重编码）</option>
+          <option value="flac">flac（重编码）</option>
         </select>
-        <div class="hint">原样复制音轨：无损且快速；重编码可压缩体积</div>
+        <div class="hint">原样复制音轨：无损且快速；重编码可转换格式</div>
         <button class="btn" id="btnExtractAudio">开始提取</button>
       </div>
     </div>
@@ -209,12 +215,15 @@
         { v: 'aiff', label: 'aiff（Apple 无损）' },
       ],
       image: [
-        { v: 'jpg', label: 'jpg（最通用）' },
+        // hasQuality:有损格式暴露「画质」三档(jpg/webp/avif/heic 各自映射编码器参数,
+        // 见 CLI JPG_Q_MAP/WEBP_Q_MAP/AVIF_CRF_MAP/HEIC_CRF_MAP);无损/无压缩格式
+        // (png/bmp/gif/tiff)无质量概念,不显示质量控件。
+        { v: 'jpg', label: 'jpg（最通用）', hasQuality: true },
         { v: 'png', label: 'png（无损）' },
-        { v: 'webp', label: 'webp（现代高效）' },
-        { v: 'avif', label: 'avif（现代高效）' },
+        { v: 'webp', label: 'webp（现代高效）', hasQuality: true },
+        { v: 'avif', label: 'avif（现代高效）', hasQuality: true },
         { v: 'gif', label: 'gif（动图）' },
-        { v: 'heic', label: 'heic（iPhone 高效）' },
+        { v: 'heic', label: 'heic（iPhone 高效）', hasQuality: true },
         { v: 'bmp', label: 'bmp（无压缩）' },
         { v: 'tiff', label: 'tiff（印刷存档）' },
       ],
@@ -323,26 +332,38 @@
       });
     }
 
-    // 编码器可用性(probe 即时返回;null=未探测,不禁用)。
-    // 缺失的编码器对应格式 UI 置灰,与 CLI has_encoder+ENCODER_MISSING 防护一致。
+    // 编码器/封装器可用性(probe 即时返回;null=未探测,不禁用)。
+    // 缺失的组件对应格式 UI 置灰,与 CLI has_encoder/has_muxer+ENCODER_MISSING 防护一致。
     let encoderMap = null;
+    // 「任一组件可用即可」的格式(如 avif 有 libsvtav1 或 libaom 任一即可)。
     const ENCODER_NEED = {
-      'webm': ['libvpx-vp9', 'libopus'],
       'mp4|hevc': ['libx265'], 'mkv|hevc': ['libx265'],
-      'heic': ['libx265'], 'webp': ['libwebp'],
+      'webp': ['libwebp'],
       'avif': ['libsvtav1', 'libaom-av1'],
       'wma': ['wmav2'], 'amr': ['libopencore_amrnb'], 'aac': ['aac'],
+    };
+    // 「所有组件缺一不可」的格式(编码器 + 封装器都要,任一缺失即置灰)。
+    // webm 需 vp9+opus 双编码器;heic 需 libx265 编码器 + heif 封装器
+    // (macOS 构建常有 libx265 但无 heif,运行时才报 "Unable to choose an output format")。
+    const ENCODER_NEED_ALL = {
+      'webm': ['libvpx-vp9', 'libopus'],
+      'heic': ['libx265', 'heif'],
     };
     function formatDisabled(f) {
       if (!encoderMap) return false;
       const key = f.codec ? f.v + '|' + f.codec : f.v;
+      const allNeed = ENCODER_NEED_ALL[key] || ENCODER_NEED_ALL[f.v];
+      if (allNeed) return allNeed.some(e => encoderMap[e] === false);
       const need = ENCODER_NEED[key] || ENCODER_NEED[f.v];
-      // 全部所需编码器都缺失才禁用(如 avif 有任一 AV1 编码器即可)
+      // 任一所需编码器可用即不置灰(如 avif 有 libsvtav1 即可)
       return need ? need.every(e => encoderMap[e] === false) : false;
     }
 
     // 当前分类对应的输出格式下拉:video 用分栏左侧(formatVideo),audio/image 用顶部(format)。
     function formatSelect() { return currentCat === 'video' ? $('formatVideo') : $('format'); }
+
+    // ffmpeg 来源(system=系统 PATH 优先 / cached=内置缓存),probe 返回后赋值,置灰提示用。
+    let ffmpegSource = null;
 
     function renderFormats() {
       const sel = formatSelect();
@@ -353,15 +374,42 @@
         opt.textContent = f.label;
         opt.disabled = formatDisabled(f);
         if (f.codec) opt.dataset.codec = f.codec;
+        if (f.hasQuality) opt.dataset.quality = '1';
+        // 置灰项悬停提示:缺什么组件 + 自助路径(从 ENCODER_NEED/ALL 反查缺失项)
+        if (opt.disabled && encoderMap) {
+          const key = f.codec ? f.v + '|' + f.codec : f.v;
+          const need = (ENCODER_NEED_ALL[key] || ENCODER_NEED_ALL[f.v]
+                     || ENCODER_NEED[key] || ENCODER_NEED[f.v] || []);
+          const missing = need.filter(e => encoderMap[e] === false);
+          opt.title = '缺少 ' + (missing.join('/') || '必要组件')
+            + (ffmpegSource === 'system'
+                ? '，当前系统 ffmpeg 不支持，可换用可用格式'
+                : '，安装含所需编码器的系统 ffmpeg 后可解锁');
+          // label 直接内嵌原因,不悬停即可见(内置缺→需安装;系统也缺→当前不支持)
+          opt.textContent = f.label
+            + (ffmpegSource === 'system' ? ' · 当前不支持' : ' · 需安装 ffmpeg');
+        }
         sel.appendChild(opt);
       });
       updateOptionVisibility();
+      // A+:每次渲染当前分类时检测置灰项并提示自助路径——分类切换/页面加载统一走这里,
+      // 修复"probe 在默认 video 分类检测不到图片置灰、切到图片也不提示"的时机缺陷。
+      if (encoderMap) {
+        const disabled = [...sel.options].filter(o => o.disabled).length;
+        if (disabled > 0) {
+          setStatus(ffmpegSource === 'system'
+            ? `当前系统 ffmpeg 缺少部分编码器,${disabled} 个格式暂不可用,可换用可用格式。`
+            : `当前内置 ffmpeg 缺少部分编码器,${disabled} 个格式暂不可用。安装含所需编码器的系统 ffmpeg 后可自动解锁。`,
+            true);
+        }
+      }
     }
 
     // 选项可见性(按分类切换布局):
     // - video:显示左右分栏(视频转换|音频提取),隐藏顶部选项行与底部大按钮;
     // - audio/image:显示顶部选项行 + 底部大按钮,隐藏分栏;
-    // - 质量:仅 image 分类且有损且接入质量参数的格式显示(jpg -q:v / webp -quality);
+    // - 画质:仅 image 分类且有损格式(jpg/webp/avif/heic,FORMATS 标记 hasQuality)
+    //   显示——质量控件跟随输出格式动态出现,选 png/bmp 等无损格式时自动隐藏;
     // - GIF 参数:video 且输出格式选 gif 时显示(fps/宽度可调)。
     function updateOptionVisibility() {
       const isVideo = currentCat === 'video';
@@ -370,8 +418,8 @@
       $('btnConvert').classList.toggle('hidden', isVideo);
       const vfmt = isVideo ? $('formatVideo').value : '';
       $('gifOpts').classList.toggle('hidden', !(isVideo && vfmt === 'gif'));
-      const fmt = currentCat === 'image' ? $('format').value : '';
-      $('optQuality').classList.toggle('hidden', !(currentCat === 'image' && (fmt === 'jpg' || fmt === 'webp')));
+      const opt = currentCat === 'image' ? $('format').selectedOptions[0] : null;
+      $('optQuality').classList.toggle('hidden', !(opt && opt.dataset.quality === '1'));
     }
     $('format').onchange = updateOptionVisibility;
     $('formatVideo').onchange = updateOptionVisibility;
@@ -382,13 +430,24 @@
         el.classList.add('active');
         currentCat = el.dataset.cat;
         renderFormats();
+        // 切换分类后旧分类的文件不可再被新分类操作(跨类别误操作 C-4):
+        // 已选文件按新类别扩展名过滤,不匹配的移出列表。
+        const exts = new Set(INPUT_EXTS[currentCat]);
+        const kept = selectedFiles.filter(f =>
+          exts.has((f.path.split('.').pop() || '').toLowerCase()));
+        if (kept.length !== selectedFiles.length) {
+          selectedFiles = kept;
+          renderFiles();
+          setStatus(`已切换到${CAT_LABEL[currentCat]},不符合该分类扩展名的已选文件已移除。`);
+          return;
+        }
         setStatus(`将转换${CAT_LABEL[currentCat]},点击「选择文件」添加。`);
       };
     });
 
     // 批量提交核心:提交即清空选择,异步派发任务(每文件一个独立任务,受并发上限=5约束),
     // 按钮全程可用,用户可以立即挑选新的一批再次点击。进度/倒计时在「任务中心」查看。
-    // 输出扩展名决定 CLI 意图:视频/音频/图片扩展名走对应转换;.mp3/.m4a/.wav 走
+    // 输出扩展名决定 CLI 意图:视频/音频/图片扩展名走对应转换;.mp3/.m4a/.wav/.flac 走
     // 重编码提取;.copy 走原样提取(无损复制)。
     function submitBatch(fmt, opts) {
       if (selectedFiles.length === 0) { setStatus('请先选择文件', true); return; }
@@ -410,13 +469,14 @@
         const params = {
           input: f.path, output,
           // quality 仅图片转换需要(其余分类不传,避免空占位串干扰 CLI)
-          quality: currentCat === 'image' ? (opts.quality || '90') : undefined,
+          quality: currentCat === 'image' ? (opts.quality || 'high') : undefined,
           audio_bitrate: undefined,
           codec: opts.codec || 'h264',
         };
         if (opts.gifFps) params.gif_fps = opts.gifFps;
         if (opts.gifWidth) params.gif_width = opts.gifWidth;
-        MT.invoke('convert', params)
+        // 长转换任务禁用 invoke 超时(progress 模式由任务中心管理生命周期)
+        MT.invoke('convert', params, { timeout: 0 })
           .then(() => {
             okCount++; done++;
             setStatus(`进度 ${done}/${total} · 成功 ${okCount}${failCount ? ' · 失败 ' + failCount : ''}(可在任务中心查看)`);
@@ -425,9 +485,11 @@
             failCount++; done++;
             const full = String((e && e.message) || e);
             // 简要原因显示在状态区;完整错误(含「｜详情」)在任务中心/日志,hover 可见。
+            // 失败时保留聚合进度,不覆盖为单个失败消息(C-5)——多任务下信息不丢失。
             const i = full.indexOf('｜');
             const head = (i > 0 ? full.slice(0, i) : full).trim();
-            setStatus(`❌ ${f.name} 失败: ${head.length > 80 ? head.slice(0, 80) + '…' : head}`, true, full);
+            const brief = head.length > 80 ? head.slice(0, 80) + '…' : head;
+            setStatus(`进度 ${done}/${total} · 成功 ${okCount} · 失败 ${failCount} — 最近失败 ${f.name}: ${brief}`, true, full);
           });
       });
     }
@@ -438,18 +500,19 @@
       submitBatch(opt.value, { codec: opt.dataset.codec || 'h264', quality: $('quality').value });
     }
 
-    // 视频模块左侧:仅视频格式转换(gif 时带 fps/宽度参数)
+    // 视频模块左侧:仅视频格式转换(gif 时带 fps/宽度参数)。
+    // quality 仅 image 分类需要(语义档位 high/medium/low,jpg/webp/avif/heic),
+    // 视频转换不传——避免无效参数传下去干扰 CLI(C-7)。
     function convertVideos() {
       const opt = $('formatVideo').selectedOptions[0];
       submitBatch(opt.value, {
         codec: opt.dataset.codec || 'h264',
-        quality: $('quality').value,
         gifFps: opt.value === 'gif' ? $('gifFps').value : undefined,
         gifWidth: opt.value === 'gif' ? $('gifWidth').value : undefined,
       });
     }
 
-    // 视频模块右侧:音频提取。copy=原样无损复制;mp3/m4a/wav=重编码。
+    // 视频模块右侧:音频提取。copy=原样无损复制;mp3/m4a/wav/flac=重编码。
     function extractAudios() {
       submitBatch($('audioExtract').value, {});
     }
@@ -475,7 +538,10 @@
       if (d.has_ffmpeg === false) {
         setStatus('未检测到 ffmpeg 依赖,点击转换时会在「任务中心」提示安装。', true);
       } else if (d.encoders) {
-        encoderMap = d.encoders;
+        // 编码器 + 封装器合并为可用性 map(heic 依赖 muxers.heif)
+        encoderMap = { ...d.encoders, ...(d.muxers || {}) };
+        ffmpegSource = d.ffmpeg_source || 'cached';
+        // renderFormats 内部会检测当前分类置灰项并提示自助路径
         renderFormats();
       }
     }).catch(() => {});

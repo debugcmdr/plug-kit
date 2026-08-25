@@ -150,9 +150,14 @@ function onPointerUp() {
   dragging = false
   dragId = null
   if (suppressClick) {
-    // 发生了重排:保存顺序;随后触发的 click 会被 handleSelect 抑制,避免误导航
-    suppressClick = false
+    // 发生了重排:保存顺序。⚠️ 不能在此把 suppressClick 置 false——浏览器事件
+    // 顺序是 mouseup → click,onPointerUp 在 mouseup 时执行,立即复位会让随后的
+    // click 逃过 handleSelect 的抑制 → 拖完排序却误跳转到该工具。用宏任务延迟
+    // 复位(click 已派发完毕后再清),handleSelect 内仍有消费逻辑做双保险。
     localStorage.setItem(ORDER_KEY, JSON.stringify(installedPlugins.value.map(p => p.id)))
+    setTimeout(() => { suppressClick = false }, 0)
+  } else {
+    suppressClick = false
   }
 }
 

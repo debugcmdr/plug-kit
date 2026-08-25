@@ -111,6 +111,8 @@ impl Registry {
     }
 
     /// Total number of cached dependency entries (across all names/versions/platforms).
+    /// registry 结构为 name → version → platform:第一层 values() 是各版本的
+    /// 平台映射,`versions.len()` 即该版本下的平台条目数,汇总即总条目数。
     pub fn entry_count(&self) -> usize {
         let mut count = 0usize;
         for versions in self.ffmpeg.values().chain(self.yt_dlp.values()).chain(self.other.values()) {

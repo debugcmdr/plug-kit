@@ -152,6 +152,7 @@ async fn dispatch(
         // 任务创建统一由 invoke_command / 兜底分支完成(MT.invoke 自动建任务,
         // 含 URL 去重);任务控制命令供插件管理自己的任务。
         // 归属校验(G-4):仅允许操作属于当前插件的任务(自管理 id 无登记记录则放行)。
+        // 返回实际操作结果(任务不存在/已终态 → false),不再无条件报成功。
         "task_cancel" => {
             let task_id = payload
                 .get("task_id")
@@ -165,8 +166,8 @@ async fn dispatch(
                     ));
                 }
             }
-            crate::task_queue::TaskQueue::cancel(task_id).await;
-            Ok(serde_json::json!({ "cancelled": true }))
+            let cancelled = crate::task_queue::TaskQueue::cancel(task_id).await;
+            Ok(serde_json::json!({ "cancelled": cancelled }))
         }
         "task_pause" => {
             let task_id = payload
@@ -181,8 +182,8 @@ async fn dispatch(
                     ));
                 }
             }
-            crate::task_queue::TaskQueue::pause(task_id).await;
-            Ok(serde_json::json!({ "paused": true }))
+            let paused = crate::task_queue::TaskQueue::pause(task_id).await;
+            Ok(serde_json::json!({ "paused": paused }))
         }
         "task_resume" => {
             let task_id = payload
@@ -197,8 +198,8 @@ async fn dispatch(
                     ));
                 }
             }
-            crate::task_queue::TaskQueue::resume(task_id).await;
-            Ok(serde_json::json!({ "resumed": true }))
+            let resumed = crate::task_queue::TaskQueue::resume(task_id).await;
+            Ok(serde_json::json!({ "resumed": resumed }))
         }
 
         // Config (per-plugin settings)

@@ -15,11 +15,11 @@ import sys
 # 单点源码 plugins/shared/——改公共逻辑需重新打包(verify-manifests 校验打包一致性)。
 try:
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service  # noqa: F401
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared"))
     from _protocol import progress, result, error, dep, parse_args  # noqa: F401
-    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error  # noqa: F401
+    from _ytdlp import cookies_args, playlist_args, diagnose_ytdlp_error, ytdlp_extract_service  # noqa: F401
 
 
 YTDLP = dep("yt-dlp")
@@ -83,6 +83,16 @@ def extract_subtitles(meta, auto=False):
 # ---------------------------------------------------------------- 提取信息
 def info(url, cookies=""):
     """提取资源信息:标题、分类可用格式列表(清晰度/大小)、字幕列表。"""
+    # 解析加速:优先常驻服务(冷启动只付一次 + 元数据缓存,重复解析秒回);
+    # 服务返回解析失败 → 直接报错;服务链路不可用 → 降级直连(行为与历史一致)。
+    svc = ytdlp_extract_service(url, cookies, "info")
+    if svc and "data" in svc:
+        _build_info_result(svc["data"])
+        return
+    if svc and "error_code" in svc:
+        error(svc["error_code"], svc["error_message"])
+        return
+    # 降级:直连 yt-dlp(现状路径)
     # -J/--dump-json 输出完整 JSON(比 --print json 更可靠)
     # 网络健壮性:抖动的网络(国内访问境外/反爬站点)下默认 20s 读超时极易失败;
     # 提升超时到 20s + 5 次重试 + 重试间隔,降低 B 站等站点间歇性挂起导致的失败率。
@@ -104,7 +114,7 @@ def info(url, cookies=""):
         elif tail:
             reason = f"解析超时:{tail}"
         else:
-            reason = "解析超时(yt-dlp 在 90s 内未取得元数据,可能是站点反爬或地区限制)。依赖已就绪,可重试或换链接。"
+            reason = "解析超时(yt-dlp 在 150s 内未取得元数据,可能是站点反爬或地区限制)。依赖已就绪,可重试或换链接。"
         error("TIMEOUT", f"解析超时(已排除依赖下载,仅计解析时长):{reason}")
         return
     except FileNotFoundError:
@@ -125,6 +135,12 @@ def info(url, cookies=""):
             error("PARSE_ERROR", "无法解析 yt-dlp 输出")
             return
 
+    # 直连成功:meta 已就绪,与服务的构造逻辑共用
+    _build_info_result(meta)
+
+
+def _build_info_result(meta):
+    """从 yt-dlp extract_info 结果(dict)构造插件响应(服务与直连路径共用)。"""
     # 整理视频格式列表(去重、按清晰度排序)
     formats = []
     seen = set()
@@ -241,8 +257,6 @@ def _run_ytdlp(cmd, url, suffix="", out_dir=None):
             file_name = os.path.basename(dst)
             if dst not in dest_files:
                 dest_files.append(dst)
-        elif line.startswith("[download] 100%"):
-            progress(100, message="下载完成", file_name=file_name, output_path=base_dir)
         elif "has already been downloaded" in line:
             progress(100, message="已存在,跳过下载", file_name=file_name, output_path=base_dir)
         elif line.startswith("ERROR") or "Error" in line or "error" in line:
@@ -294,7 +308,10 @@ def download(url, category, quality, output_dir, extra="", cookies="", playlist=
             result({"output_dir": output_dir, "files": files, "category": category})
 
     elif category == CATEGORY_LIVE:
-        # 直播:实时录制(可带时长限制 extra=Nm)
+        # 直播:实时录制(默认从当前直播点录制;extra="from_start" 时从头录制)。
+        # 注意:UI 当前只传 ""(实时)或 "from_start"(从头),暂不支持时长限制——
+        # 若未来需要「录 N 分钟」,yt-dlp 用 --live-from-start + 额外时长参数实现,
+        # 勿在此注释中宣称未实现的能力(D-4)。
         cmd = [YTDLP, "--newline", "-f", "best", "-o", pattern]
         if extra:
             cmd += ["--wait-for-video", "5"]
@@ -321,6 +338,9 @@ def download(url, category, quality, output_dir, extra="", cookies="", playlist=
 
     else:
         # 视频:按清晰度选择。quality 可能是 "best" / "2160p" / "未知清晰度" 等标签。
+        # 输出文件名带清晰度标识 [height]p:同一视频多清晰度可同时下载互不覆盖
+        # (曾用 %(title)s.%(ext)s,两个清晰度得到同名文件互相覆盖)。
+        video_pattern = os.path.join(output_dir, "%(title)s [%(height)s]p.%(ext)s")
         if quality and quality != "best":
             h = re.sub(r"\D", "", quality)
             if h and int(h) > 0:
@@ -333,7 +353,7 @@ def download(url, category, quality, output_dir, extra="", cookies="", playlist=
                 fmt = "bestvideo+bestaudio/best"
         else:
             fmt = "bestvideo+bestaudio/best"
-        cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", pattern]
+        cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", video_pattern]
         cmd += playlist_args(playlist) + base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}", out_dir=output_dir)
         if ok:

@@ -37,9 +37,15 @@ def cookies_args(cookies):
 
 
 def playlist_args(playlist):
-    """--playlist 为真值(1/yes/true)时返回 --yes-playlist,支持下载整个播放列表/频道。"""
-    if not playlist or playlist is True:
+    """--playlist 为真值(1/yes/true/on 或 flag True)时返回 --yes-playlist,支持下载整个播放列表/频道。
+
+    注意:parse_args 对无值 flag(--playlist)返回 True,True 同样表达"下载整个列表"的
+    用户意图,必须返回 --yes-playlist(此前误将 True 当"未提供",手动 CLI 调用失效)。
+    """
+    if not playlist:
         return []
+    if playlist is True:
+        return ["--yes-playlist"]
     p = str(playlist).strip().lower()
     return ["--yes-playlist"] if p in ("1", "yes", "true", "on") else []
 
@@ -60,11 +66,19 @@ def diagnose_ytdlp_error(err_lines, last_lines, code):
     raw_lower = raw.lower()
 
     # 抓取 yt-dlp 原始错误最后一行(去 [download] 前缀),供用户自诊。
+    # 过滤 yt-dlp 开发者样板文案(please report this issue / Confirm you are on
+    # the latest version 等)——对用户无意义,且会掩盖真实错误行。
+    _YTDLP_JUNK = ("please report this issue", "confirm you are on the latest version",
+                   "filling out the appropriate issue template")
     detail = ""
     for line in reversed(last_lines or []):
-        if line and not line.startswith("[download]"):
-            detail = line.strip()[-200:]
-            break
+        line = line.strip()
+        if not line or line.startswith("[download]"):
+            continue
+        if any(j in line.lower() for j in _YTDLP_JUNK):
+            continue
+        detail = line[-200:]
+        break
     suffix = f" ｜ 详情: {detail}" if detail else ""
 
     # 0. 浏览器 cookies 读取权限(macOS 沙盒:Safari 需「完全磁盘访问」授权)。
@@ -142,6 +156,7 @@ def diagnose_ytdlp_error(err_lines, last_lines, code):
         "timed out", "read timed out", "connection aborted", "connection refused",
         "connection reset", "network is unreachable", "ssl:", "certificate verify failed",
         "name resolution", "temporary failure in name resolution", "no route to host",
+        "bad gateway", "502",
     ]):
         return ("NETWORK_ERROR",
                 f"网络连接失败/超时/SSL/DNS 异常。请检查网络后重试,或换网络/代理。{suffix} (yt-dlp 退出码 {code})")
@@ -159,3 +174,99 @@ def diagnose_ytdlp_error(err_lines, last_lines, code):
     # 兜底:返回原始错误,用户可自诊
     return ("UNKNOWN_ERROR",
             f"未知错误 (yt-dlp 退出码 {code}){suffix}")
+
+
+# ---------------------------------------------------------------- 常驻解析服务客户端
+# 解析加速:共享 venv(pip 装 yt-dlp 包)+ 常驻服务进程(冷启动只付一次 + 元数据缓存)。
+# 仅 Unix 启用;Windows 无 Unix socket 自动降级直连;服务不可用时同样降级直连,不回归。
+import json as _json
+import socket as _socket
+import subprocess as _subprocess
+import sys as _sys
+import time as _time
+
+SERVICE_SOCKET = f"/tmp/plugkit-ytdlp-{os.getuid()}.sock"
+VENV_DIR = os.path.expanduser("~/.plugkit/venvs/ytdlp")
+VENV_PY = os.path.join(VENV_DIR, "bin", "python")
+PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+_SERVICE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ytdlp_service.py")
+
+
+def _service_connect(timeout=2.0):
+    """连接常驻服务 socket;不可用返回 None(Windows 无 AF_UNIX → None)。"""
+    if not hasattr(_socket, "AF_UNIX"):
+        return None
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(SERVICE_SOCKET)
+        return s
+    except Exception:
+        return None
+
+
+def _ensure_service():
+    """确保服务可用:已连 → True;venv 缺失则创建(首次 ~30s);拉起服务并等 socket ready。
+    Windows 无 POSIX socket 语义,直接降级(不反复拉起失败进程)。"""
+    if os.name != "posix":
+        return False
+    s = _service_connect()
+    if s:
+        s.close()
+        return True
+    if not os.path.exists(VENV_PY):
+        try:
+            _subprocess.run([_sys.executable, "-m", "venv", VENV_DIR],
+                            capture_output=True, timeout=120)
+            if not os.path.exists(VENV_PY):
+                return False
+            _subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-i", PIP_MIRROR, "yt-dlp"],
+                            capture_output=True, timeout=300)
+        except Exception:
+            return False
+    if not os.path.exists(VENV_PY):
+        return False
+    try:
+        _subprocess.Popen(
+            [VENV_PY, _SERVICE_SCRIPT, SERVICE_SOCKET],
+            stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+    except Exception:
+        return False
+    for _ in range(30):  # 等 socket ready(首次 import yt-dlp 较慢)
+        s = _service_connect()
+        if s:
+            s.close()
+            return True
+        _time.sleep(0.5)
+    return False
+
+
+def ytdlp_extract_service(url, cookies="", mode="info", timeout=180):
+    """优先走常驻服务提取。返回:
+    {"data": info_dict, "cached": bool}        成功(调用方直接用 data 构造结果)
+    {"error_code": str, "error_message": str}  服务返回解析失败(调用方直接报错)
+    None                                       服务链路不可用(调用方降级直连)"""
+    s = _service_connect()
+    if not s and not _ensure_service():
+        return None
+    s = _service_connect()
+    if not s:
+        return None
+    try:
+        with s:
+            s.settimeout(timeout)
+            req = _json.dumps({"id": 1, "cmd": "extract", "url": url,
+                               "cookies": cookies, "mode": mode}, ensure_ascii=False)
+            s.sendall((req + "\n").encode("utf-8"))
+            line = s.makefile("r", encoding="utf-8").readline()
+            if not line:
+                return None
+            resp = _json.loads(line)
+        if resp.get("ok"):
+            return {"data": resp.get("data"), "cached": resp.get("cached", False)}
+        return {"error_code": resp.get("code", "EXTRACT_FAILED"),
+                "error_message": resp.get("message", "解析失败")}
+    except Exception:
+        return None  # 通信异常 → 降级直连

@@ -3,7 +3,7 @@
 覆盖:
 - parse_args 各形态解析
 - _reserve_path 原子占位(含并发场景)与 resolve_output 同路径安全化
-- JPG_Q_MAP 质量映射
+- 画质档位映射(high/medium/low → jpg q:v / webp quality / avif·heic crf)+ UI 对齐
 - CLI EXTS 白名单与 UI INPUT_EXTS 严格对齐(防漂移)
 - UI FORMATS 每个输出值都被 CLI 输出分发覆盖 + codec 白名单
 """
@@ -56,8 +56,10 @@ def parse_ui():
             for fm in re.finditer(r"\{(.*?)\}", m.group(1), re.S):
                 v = re.search(r"v: '([^']+)'", fm.group(1))
                 c = re.search(r"codec: '([^']+)'", fm.group(1))
+                q = re.search(r"hasQuality:\s*true", fm.group(1))
                 if v:
-                    items.append({"v": v.group(1), "codec": c.group(1) if c else None})
+                    items.append({"v": v.group(1), "codec": c.group(1) if c else None,
+                                  "has_quality": bool(q)})
         formats[cat] = items
     return {"input_exts": input_exts, "formats": formats}
 
@@ -128,9 +130,30 @@ def test_resolve_output_existing_gets_suffix(tmp_path):
     assert resolved.endswith("out (1).mp4")
 
 
-# ---------------------------------------------------------------- JPG 质量映射
-def test_jpg_q_map():
-    assert JPG_Q_MAP == {"90": "2", "75": "5", "60": "8"}
+# ---------------------------------------------------------------- 画质档位映射
+def test_quality_maps():
+    """画质档位统一为语义值 high/medium/low,各格式各自映射编码器参数
+    (jpg -q:v 反向值域、webp -quality 正向、avif/heic -crf 反向,互不通用)。"""
+    assert JPG_Q_MAP == {"high": "2", "medium": "5", "low": "8"}
+    assert cli.WEBP_Q_MAP == {"high": "90", "medium": "75", "low": "60"}
+    assert cli.AVIF_CRF_MAP == {"high": "26", "medium": "30", "low": "36"}
+    assert cli.HEIC_CRF_MAP == {"high": "24", "medium": "28", "low": "33"}
+
+
+def test_quality_maps_have_same_keys():
+    """四个映射表档位键一致(UI 三档在全部有损格式均有效)。"""
+    keys = set(cli.JPG_Q_MAP)
+    for m in (cli.WEBP_Q_MAP, cli.AVIF_CRF_MAP, cli.HEIC_CRF_MAP):
+        assert set(m) == keys, f"档位键不一致: {set(m)} != {keys}"
+
+
+def test_ui_hasquality_aligns_with_cli_maps():
+    """UI 标记 hasQuality 的有损格式 ↔ CLI 有对应映射,防「UI 加标记但 CLI 忘映射」
+    (曾出现 webp 直接透传语义值 high 的隐患)。png/bmp/gif/tiff 无损语义不得误标。"""
+    ui_has_q = {f["v"] for f in parse_ui()["formats"]["image"] if f["has_quality"]}
+    cli_maps = {"jpg": cli.JPG_Q_MAP, "webp": cli.WEBP_Q_MAP,
+                "avif": cli.AVIF_CRF_MAP, "heic": cli.HEIC_CRF_MAP}
+    assert ui_has_q == set(cli_maps), f"UI hasQuality {sorted(ui_has_q)} != CLI 映射 {sorted(cli_maps)}"
 
 
 # ---------------------------------------------------------------- 白名单一致性
@@ -171,12 +194,12 @@ def test_video_formats_no_audio_extract_entries():
 def test_extract_audio_options_aligned_with_cli():
     """UI「音频提取」下拉取值必须被 CLI 支持:
     copy=原样无损提取(CLI 识别 .copy 输出,探测源音轨后 -c:a copy);
-    mp3/m4a/wav=重编码(走 AUDIO_EXTS 音频转换)。copy 为默认(第一项)。"""
+    mp3/m4a/wav/flac=重编码(走 AUDIO_EXTS 音频转换)。copy 为默认(第一项)。"""
     src = open(INDEX_HTML, encoding="utf-8").read()
     m = re.search(r'id="audioExtract"(.*?)</select>', src, re.S)
     assert m, "index.html 缺少 audioExtract 下拉框"
     values = re.findall(r'value="([^"]*)"', m.group(1))
-    assert values == ["copy", "mp3", "m4a", "wav"], f"audioExtract 选项漂移: {values}"
+    assert values == ["copy", "mp3", "m4a", "wav", "flac"], f"audioExtract 选项漂移: {values}"
     for v in values[1:]:
         assert f".{v}" in AUDIO_EXTS, f"audioExtract 取值 {v} 不在 CLI 音频格式集"
 
@@ -188,6 +211,14 @@ def test_extract_audio_copy_mapping():
                        ("pcm_s24le", "wav"), ("ac3", "ac3"), ("eac3", "eac3"),
                        ("wmav2", "wma"), ("aiff", "aiff")):
         assert cli.AUDIO_CODEC_EXT[codec] == ext, f"映射错误: {codec} → {ext}"
+
+
+def test_audio_copy_ext_unknown_codec_returns_none():
+    """C-1 回归:未知音轨编码(蓝光常见的 dts/truehd 等)必须返回 None 而非崩溃。
+    extract_audio_copy 用 `audio_copy_ext(codec) or 'wav'` 降级,绝不允许 None 拼接路径。"""
+    assert cli.audio_copy_ext("aac") == "m4a"
+    for codec in ("dts", "truehd", "mlp", "pcm_u8", "pcm_s16be", "mp2", "smv", None, ""):
+        assert cli.audio_copy_ext(codec) is None, f"未知编码 {codec} 应返回 None"
 
 
 def test_probe_reports_encoders():
@@ -206,6 +237,7 @@ def test_probe_reports_encoders():
     for enc in ("libx264", "libx265", "libopus", "libwebp", "libvpx-vp9"):
         assert enc in d["encoders"], f"probe 缺编码器探测: {enc}"
     assert "copy" in d["extractable_audio"], "原样提取(copy)应列入 extractable_audio"
+    assert "flac" in d["extractable_audio"], "重编码提取应含 flac(无损,UI 下拉可选项)"
 
 
 def test_video_split_layout_present():

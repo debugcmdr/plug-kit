@@ -4,11 +4,18 @@
   const BRIDGE_VERSION = '1.0.0';
   const pending = new Map();
   
-  function invoke(command, payload) {
+  // 默认 invoke 超时 10 分钟(ASR/dialog 等长操作)。
+  // 注意:progress+json 模式的长任务(下载/转换,由任务中心管理生命周期)必须
+  // 传 { timeout: 0 } 禁用超时——否则任务运行超 10 分钟后这里 reject,插件 UI
+  // 误报失败且按钮恢复,用户可重复提交导致重复下载(G-2)。
+  const DEFAULT_TIMEOUT = 600000;
+
+  function invoke(command, payload, opts) {
     return new Promise((resolve, reject) => {
       const id = typeof crypto !== 'undefined' && crypto.randomUUID 
         ? crypto.randomUUID() 
         : 'id-' + Date.now();
+      const timeoutMs = (opts && opts.timeout != null) ? opts.timeout : DEFAULT_TIMEOUT;
       pending.set(id, { resolve, reject, timer: null });
       window.parent.postMessage({
         type: CHANNEL + ':invoke',
@@ -16,11 +23,13 @@
         command: command,
         payload: payload || {}
       }, '*');
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error('Command ' + command + ' timed out'));
-      }, 600000);  // 10 分钟(ASR/dialog 等长操作)
-      pending.get(id).timer = timer;
+      if (timeoutMs > 0) {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error('Command ' + command + ' timed out'));
+        }, timeoutMs);
+        pending.get(id).timer = timer;
+      }
     });
   }
   

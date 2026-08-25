@@ -217,8 +217,10 @@
       btn.textContent = '提取中...';
       try {
         const info = await MT.invoke('list', { url, cookies: cookiesSetting });
-        // 追加卡片(多列表并行):提取按钮恢复后可继续提取下一个播放列表
-        appendCard(info);
+        // 追加卡片(多列表并行):提取按钮恢复后可继续提取下一个播放列表。
+        // url 一并快照存入卡片——后续下载/导出不回退输入框当前值(用户可能已
+        // 改成别的列表,导致无 playlist_url 的卡片下错列表)。
+        appendCard(info, url);
       } catch (e) {
         const msg = ((e && e.message) || e || '提取失败');
         toast('提取失败: ' + brief(String(msg)), true);
@@ -236,9 +238,11 @@
 
     // 渲染一个播放列表卡片(多列表并行:每次提取追加一张卡,互不覆盖;
     // 任务中心仍统括全部任务,此处卡片只负责本列表的下载/导出/进度展示)。
-    function appendCard(info) {
+    // url:提取时输入的原始链接快照(下载/导出回退用,不回退输入框当前值)。
+    function appendCard(info, url) {
       const card = {
         info: info,
+        url: url || '',
         items: new Set((info.entries || []).map(e => e.index)),
         busy: false,
         els: {},
@@ -272,24 +276,33 @@
         <div class="dl-track"><div class="dl-fill"></div></div>
         <div class="dl-meta"><span class="msg"></span><span class="pct"></span></div>
       </div>`;
-      if (truncated) html += `<div class="hint">列表过长,仅显示前 500 条(下载不受影响)。</div>`;
+      if (truncated) {
+        // 明确告知:表格截断展示,但勾选默认包含全部条目(P-3),避免"只下 500 条"的误判
+        html += `<div class="hint">列表过长,仅展示前 500 条。已默认勾选全部 ${info.count} 集(如需只下其中一部分,请先「全不选」再勾选可见条目)。</div>`;
+      }
 
       html += `<div class="table-wrap"><table class="entries">
         <thead><tr><th class="cb"><input type="checkbox" class="cbAll" /></th><th class="idx">#</th><th>标题</th><th class="dur">时长</th><th class="up">上传者</th><th class="views">播放</th></tr></thead>
         <tbody>`;
       entries.forEach(e => {
         const checked = card.items.has(e.index) ? 'checked' : '';
+        // 链接仅 http(s) 渲染为可点击(P-7):url 来自 yt-dlp 提取的第三方数据,
+        // 非 http(s) 协议(如 javascript:)不生成 href,防注入面。
+        const u = String(e.url || '');
+        const link = /^https?:\/\//i.test(u)
+          ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(e.title)}</a>`
+          : `<span>${esc(e.title)}</span>`;
         html += `<tr>
           <td class="cb"><input type="checkbox" class="row-cb" data-idx="${e.index}" ${checked} /></td>
           <td class="idx">${e.index}</td>
-          <td class="t"><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)}</a></td>
+          <td class="t">${link}</td>
           <td class="dur">${esc(e.duration_string)}</td>
           <td class="up">${esc(e.uploader)}</td>
           <td class="views">${fmtViews(e.view_count)}</td>
         </tr>`;
       });
       html += '</tbody></table></div>';
-      html += `<div class="hint">勾选后点击「下载勾选」批量下载;每集保存为 <code>播放列表名/序号-标题.ext</code>。</div>`;
+      html += `<div class="hint">勾选后点击「下载勾选」批量下载。</div>`;
       wrap.innerHTML = html;
       section.appendChild(wrap);
 
@@ -307,19 +320,22 @@
       };
 
       // 卡片内事件绑定(闭包持有 card,互不干扰)
+      // 全选/全不选必须基于「全量」entries(P-3):表格可能截断为前 500 条展示,
+      // 只处理截断数组会让"全不选→全选"丢失表格外条目的勾选,与"下载不受影响"矛盾。
+      const allEntries = info.entries || [];
       wrap.querySelector('[data-act="all"]').onclick = () => {
-        entries.forEach(en => card.items.add(en.index));
+        allEntries.forEach(en => card.items.add(en.index));
         card.els.rowCbs.forEach(cb => { cb.checked = true; });
         card.els.cbAll.checked = true;
       };
       wrap.querySelector('[data-act="none"]').onclick = () => {
-        entries.forEach(en => card.items.delete(en.index));
+        allEntries.forEach(en => card.items.delete(en.index));
         card.els.rowCbs.forEach(cb => { cb.checked = false; });
         card.els.cbAll.checked = false;
       };
       card.els.cbAll.onclick = (e) => {
         const on = e.target.checked;
-        entries.forEach(en => { if (on) card.items.add(en.index); else card.items.delete(en.index); });
+        allEntries.forEach(en => { if (on) card.items.add(en.index); else card.items.delete(en.index); });
         card.els.rowCbs.forEach(cb => { cb.checked = on; });
       };
       card.els.rowCbs.forEach(cb => {
@@ -366,6 +382,8 @@
       bar.classList.remove('hidden');
       bar.classList.remove('done');
       msg.textContent = '准备批量下载...';
+      msg.style.color = '';      // 重置上次失败残留的红色(P-5)
+      msg.title = '';            // 并清掉 hover 的旧错误详情
       pct.textContent = '0%';
       fill.style.width = '0%';
       fill.style.background = '';
@@ -388,14 +406,15 @@
       });
 
       try {
+        // 长批量下载禁用 invoke 超时(progress 模式由任务中心管理生命周期)
         const r = await MT.invoke('download', {
-          url: card.info.playlist_url || $('url').value.trim(),
+          url: card.info.playlist_url || card.url,
           items: range,
           quality: 'best',
           output_dir: saveDir || undefined,
           cookies: cookiesSetting || '',
           task_id: taskId,
-        });
+        }, { timeout: 0 });
         if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         msg.textContent = '下载完成 ✓';
         pct.textContent = '100%';
@@ -432,12 +451,13 @@
       btn.disabled = true;
       btn.textContent = mode === 'links' ? '导出链接中...' : '全量提取中(可能较慢)...';
       try {
+        // full 全量提取可长达 30 分钟,禁用 invoke 超时(json 模式但受后端 30 分钟超时约束)
         const r = await MT.invoke('export', {
-          url: card.info.playlist_url || $('url').value.trim(),
+          url: card.info.playlist_url || card.url,
           output_dir: saveDir || undefined,
           cookies: cookiesSetting || '',
           mode: mode,
-        });
+        }, { timeout: 0 });
         if (r.output_dir) { $('savePath').textContent = r.output_dir; saveDir = r.output_dir; }
         const label = r.format === 'links' ? '链接清单' : '全量信息 CSV';
         toast(`已导出${label} (${r.format.toUpperCase()}):\n${r.file}\n\n共 ${r.count} 条` +

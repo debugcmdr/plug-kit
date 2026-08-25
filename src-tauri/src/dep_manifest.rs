@@ -122,7 +122,24 @@ fn ffprobe_spec_for_platform() -> DepSpec {
 /// 跨平台探测:Unix 用 `sh -c "command -v"`,Windows 用 `where`。
 /// (原实现一律用 sh——Windows 无 sh 恒返回 false,系统 PATH 已装的
 /// ffmpeg/yt-dlp 被判定不可用,触发无谓下载。)
+/// 结果进程内缓存 30s(R-19):每个任务 invoke 都探测 2-3 个依赖,
+/// 每次 spawn sh/where 子进程的开销在批量/高频调用下不可忽略。
 pub fn dep_available_on_path(name: &str) -> bool {
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static PATH_CACHE: once_cell::sync::Lazy<Mutex<std::collections::HashMap<String, (Instant, bool)>>> =
+        once_cell::sync::Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+    const PATH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    {
+        let cache = PATH_CACHE.lock().unwrap();
+        if let Some((at, v)) = cache.get(name) {
+            if at.elapsed() < PATH_CACHE_TTL {
+                return *v;
+            }
+        }
+    }
     let exe = if cfg!(target_os = "windows") {
         format!("{}.exe", name)
     } else {
@@ -137,7 +154,9 @@ pub fn dep_available_on_path(name: &str) -> bool {
             .args(["-c", &format!("command -v {} 2>/dev/null", exe)])
             .output()
     };
-    matches!(output, Ok(o) if o.status.success() && !o.stdout.is_empty())
+    let available = matches!(output, Ok(o) if o.status.success() && !o.stdout.is_empty());
+    PATH_CACHE.lock().unwrap().insert(name.to_string(), (Instant::now(), available));
+    available
 }
 
 /// 当前平台字符串(windows-x64 / macos-arm64 / ...)。

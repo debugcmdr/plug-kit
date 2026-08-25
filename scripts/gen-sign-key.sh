@@ -10,6 +10,8 @@ OUT_DIR="${1:-./.signing}"
 mkdir -p "$OUT_DIR"
 
 openssl genpkey -algorithm ED25519 -out "$OUT_DIR/plugkit-sign.key" 2>/dev/null
+# 私钥权限收紧为 600(T-2):生成时 umask 可能较宽松,私钥可读会削弱签名安全
+chmod 600 "$OUT_DIR/plugkit-sign.key" 2>/dev/null || true
 # 公钥 DER 去掉 30 长度头等,取最后 32 字节(原始 Ed25519 公钥),base64 编码
 openssl pkey -in "$OUT_DIR/plugkit-sign.key" -pubout -outform DER 2>/dev/null \
   | tail -c 32 | base64 > "$OUT_DIR/plugkit-sign.pub.b64"
