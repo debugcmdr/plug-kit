@@ -9,6 +9,8 @@ yt-dlp 可执行解析(优先共享 venv pip 版,回退外壳注入二进制)。
 """
 
 import os
+import subprocess as _subprocess
+import sys as _sys
 
 # progress/dep 来自 _protocol(首次创建 venv 报进度、二进制回退取外壳注入路径)。
 # 双路径导入与各插件 CLI 一致:生产(打包副本)/开发(shared 源码)均可用,
@@ -191,8 +193,6 @@ def diagnose_ytdlp_error(err_lines, last_lines, code):
 # 下载/解析统一使用共享 venv(pip 装 yt-dlp 包):pip 版冷启动 ~0.4s vs
 # PyInstaller 单文件二进制每次解包 ~22s(实测本机 22s/0.4s)。
 # venv 缺失(全新机器/Windows)时自动创建(首次 ~30s,带进度提示);失败回退二进制。
-import subprocess as _subprocess
-import sys as _sys
 
 # 下载/解析统一使用的 yt-dlp 版本(pinned,与 src-tauri/src/dep_manifest.rs 的
 # YTDLP_VERSION 保持同步——两处手工对齐,改版本必须同时改)。

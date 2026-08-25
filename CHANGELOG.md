@@ -2,6 +2,41 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本语义化 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [未发布] - 2026-08-25 开发阶段
+
+### 新增
+
+- **工具箱更新红点 + 应用更新检查**:侧边栏「工具箱」按已装工具是否有新版亮红点(启动拉清单);新增 `check_app_update`(查 GitHub Releases latest vs 当前版本,**仅告知**,网络/限流静默)+ 设置页「有新版本 vX」提示 + 查看更新链接(GitHub Releases)
+- **插件脚手架 `scripts/new-plugin.sh`**:一键生成插件骨架(manifest + CLI + HTML,协议要点/双路径导入/esc/toast 就绪),`package-plugins.sh` 改自动发现 `plugins/*/manifest.json`(消除硬编码,新插件零配置进打包)
+- **Rust 单元测试**:task_queue 状态机迁移表 + 任务创建、dependency_cache 引用计数增删对称性(回归 B-1 落盘)
+- **download/playlist CLI 单元测试**:`test_download_cli.py`(8 例)/`test_playlist_cli.py`(4 例),覆盖信息构造/列表构造/URL 识别/CSV 转义
+
+### 变更
+
+- **下载/解析统一使用 venv pip 版 yt-dlp**(`ytdlp_binary()`):冷启动 22s → 0.4s(PyInstaller 单文件每次解包是根因);venv 缺失自动创建(pinned 2026.08.19,与 dep_manifest 对齐),失败回退缓存二进制;解析服务删除后 `_ensure_ytdlp_venv` 承担 venv 创建
+- **侧边栏「插件市场」→「工具箱」**:方向定案——放弃第三方插件生态,工具全部官方维护,工具级热更新为主、外壳变更才发整包
+- **路径常量集中 `paths.rs`**:替换 9 处散落 `~/.plugkit` 路径(数据/日志/缓存/工作/临时/任务/插件/配置)
+- **设置页版本号 Rust 透出**(`get_app_version`,弃 `VITE_APP_VERSION`),与更新比较同基准
+- **错误码化去重提示**:后端 dedup 消息加 `[DUP_EXTRACT]` 前缀,插件 UI 按错误码判断(弃字符串匹配);macOS cookies 权限错误 `openPermissionSettings` 一键直达
+- **manifest 依赖约束改存在性声明**:原 `>=6.0` 等版本约束从未被解析,清空约束使声明与实现一致(未来需版本门槛在 dep_manifest 层实现)
+
+### 移除
+
+- **常驻解析服务**(`_ytdlp_service.py` + `_ytdlp.py` 服务客户端):ROI 实测——无服务直连 pip 版冷解析 1.69s vs 服务 1.57s 仅差 0.1s(网络主导),250MB 常驻内存换"同 URL 重复解析 0s"边缘场景不划算;download/playlist 解析/下载统一直连 venv
+
+### 修复
+
+- **依赖引用计数落盘(B-1)**:缓存命中分支 `increment_refcount` 后补 `registry.save()`——装 A 装 B 共用依赖后卸 A,不再因内存 registry 未落盘误删 B 仍在用的依赖
+- **日志跨文件顺序颠倒(B-2)**:多文件聚合后整体 reverse → 当天日志不足 500 行跨入昨天文件时顺序错乱——改为每文件内倒序聚合
+- **zip 解压炸弹防护(B-3)**:单文件 64MB / 累计 512MB / 条目 1 万上限,防恶意包膨胀填满磁盘
+- **playlist export 超时契约(C-1)**:CLI 1800s 超时 vs 外壳 json 模式 300s 硬超时冲突——export 改 progress+json(外壳不设超时),大列表全量导出不再 5 分钟被杀
+- **playlist `_build_list_result` NameError**:条目缺 url 时引用未定义变量——加默认参数 + 单测覆盖
+- **ytdlp_binary 隐藏 NameError**:回退分支引用 `dep` 但 `_ytdlp.py` 未导入(venv 存在时未暴露)——补导入
+- **CSP 注入边界(B-5)**:HTML head 属性值含 `>` 时注入失效——`find_tag_end` 跳过引号段;img-src 收紧
+- **shell 拼接注入面(B-4)**:`dep_available_on_path` 的 `sh -c` 拼接改参数化
+- **substitute_args 一次性替换(B-8)**:占位符替换改为单遍 `substitute_arg_once`,消除参数值含占位符时的二次污染
+- **前端健壮性**:mapTask progress 兜底、任务控制失败提示、任务筛选补 paused/interrupted、App.vue 事件类型化
+
 ## [未发布] - 2026-08-24 开发阶段
 
 ### 新增
