@@ -121,7 +121,8 @@ def resolve_output(input_path, output_path):
     场景2(同名冲突): 设置了保存目录时,不同目录的同名文件(/a/1.mp4 与 /b/1.mp4)
                   都会映射到 saveDir/1.mp4,两个任务并发写同一路径 → 用原子占位
                   (O_CREAT|O_EXCL)保证同一路径只有一个任务拿到,其余自动加序号。
-    """
+    场景3(同文件异路径): macOS 大小写不敏感文件系统 / 硬链接下,abspath 字符串
+                  比较会漏判 "同文件"(/A/x.mp4 与 /a/x.mp4)→ samefile 兜底。"""
     inp = os.path.abspath(input_path)
     out = os.path.abspath(output_path)
     if out == inp:
@@ -129,6 +130,14 @@ def resolve_output(input_path, output_path):
         base = os.path.splitext(os.path.basename(out))[0]
         ext = os.path.splitext(out)[1]
         return _reserve_path(os.path.join(d, f"{base}_converted{ext}"))
+    try:
+        if os.path.exists(inp) and os.path.exists(out) and os.path.samefile(inp, out):
+            d = os.path.dirname(out)
+            base = os.path.splitext(os.path.basename(out))[0]
+            ext = os.path.splitext(out)[1]
+            return _reserve_path(os.path.join(d, f"{base}_converted{ext}"))
+    except OSError:
+        pass
     return _reserve_path(out)
 
 

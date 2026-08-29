@@ -104,7 +104,6 @@ async fn invoke_cli(
         Some(id) => {
             // 归属校验(G-4):插件传入的 task_id 若已在任务中心登记且不属于当前插件
             // → 拒绝(防恶意/异常插件覆盖他人任务控制标志、改他人任务状态)。
-            // 自管理模式(插件自带随机 id,任务中心无记录)不受影响。
             if let Some(owner) = crate::task_queue::TaskQueue::owner_of(id).await {
                 if owner != plugin_id {
                     return Err(format!(
@@ -112,6 +111,14 @@ async fn invoke_cli(
                         id, plugin_id
                     ));
                 }
+            } else {
+                // 未登记(插件自管理 id,用于进度事件过滤):以该 id 创建任务记录,
+                // 使下载/批量任务进入任务中心(可见进度、可取消),修复此前
+                // 「传 task_id 不建任务」导致任务中心看不到下载任务、UI 文案
+                // 「可在任务中心查看进度」落空的不一致。下载类命令不查重。
+                crate::task_queue::TaskQueue::create_with_id(
+                    plugin_id, command_name, extract_url(&params), id,
+                ).await;
             }
             id.to_string()
         }

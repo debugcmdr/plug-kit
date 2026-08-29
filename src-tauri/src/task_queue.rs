@@ -142,12 +142,14 @@ impl TaskQueue {
     /// 取锁、非原子,并发双击提取同一链接会穿透检查创建双任务。
     /// 命中重复返回 None(调用方提示),否则创建并返回新 task_id。
     /// 注意:必须内联检查(不能复用 find_duplicate),本方法持有锁,再取会死锁。
+    /// URL 按规范化形式比较(去尾斜杠/大小写不敏感),任务存储仍保留原始值。
     pub async fn create_with_dedup(plugin_id: &str, type_: &str, url: Option<String>) -> Option<String> {
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(url) = &url {
+            let normalized = normalize_url_for_dedup(url);
             let dup = queue.tasks.values().any(|t| {
                 t.plugin_id == plugin_id
-                    && t.url.as_deref() == Some(url)
+                    && t.url.as_deref().map(normalize_url_for_dedup).as_deref() == Some(normalized.as_str())
                     && matches!(t.status, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused)
             });
             if dup {
@@ -213,7 +215,7 @@ impl TaskQueue {
 
     pub async fn update_progress(
         task_id: &str,
-        percent: f64,
+        percent: Option<f64>,
         speed: Option<String>,
         eta: Option<String>,
         message: Option<String>,
@@ -222,8 +224,21 @@ impl TaskQueue {
     ) {
         let mut queue = TASK_QUEUE.lock().await;
         if let Some(task) = queue.tasks.get_mut(task_id) {
-            task.progress = TaskProgress { percent, speed, eta, message };
-            // 插件 progress 行可能只携带部分字段,缺省时保留任务已有值。
+            // 字段级更新:None 字段保留任务已有值——插件 progress 行可能只携带
+            // 部分字段(如播放列表切换集数时仅报 message/output_path),若整体
+            // 覆盖会把 percent/speed/eta 清空,任务中心进度条回跳 0%(用户可见)。
+            if let Some(p) = percent {
+                task.progress.percent = p;
+            }
+            if speed.is_some() {
+                task.progress.speed = speed;
+            }
+            if eta.is_some() {
+                task.progress.eta = eta;
+            }
+            if message.is_some() {
+                task.progress.message = message;
+            }
             if file_name.is_some() {
                 task.file_name = file_name;
             }
@@ -255,6 +270,34 @@ impl TaskQueue {
         if changed {
             queue.save_log("persist");
         }
+    }
+
+    /// 以指定 task_id 创建任务记录(插件自管理 id 场景)。
+    /// 仅当 id 未登记时插入(幂等,不覆盖历史任务);url 供任务中心展示/去重。
+    /// 用途:插件 UI 自行生成 task_id(用于进度事件过滤)时,桥接层调用本方法
+    /// 让任务进入任务中心——否则「传了 task_id 就不建任务」导致下载任务在
+    /// 任务中心不可见、无法取消,与插件 UI「可在任务中心查看进度」的文案矛盾。
+    pub async fn create_with_id(plugin_id: &str, type_: &str, url: Option<String>, task_id: &str) {
+        let mut queue = TASK_QUEUE.lock().await;
+        if queue.tasks.contains_key(task_id) {
+            return; // 已登记(活跃或终态),不覆盖
+        }
+        let task = Task {
+            task_id: task_id.to_string(),
+            plugin_id: plugin_id.to_string(),
+            type_: type_.to_string(),
+            status: TaskStatus::Pending,
+            progress: TaskProgress::default(),
+            error: None,
+            file_name: None,
+            output_path: None,
+            url,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            started_at: None,
+            completed_at: None,
+        };
+        queue.tasks.insert(task_id.to_string(), task);
+        queue.save_log("persist");
     }
 
     /// 查询任务归属插件(不存在返回 None)。供 bridge 层校验 task_id 归属(G-4)。
@@ -369,6 +412,13 @@ impl TaskQueue {
     }
 }
 
+/// 去重 URL 规范化:去首尾空白/尾部斜杠 + 全小写(scheme/host 大小写不敏感,
+/// 路径尾斜杠等价);查询参数保留(不同参数视为不同资源)。仅用于去重比较,
+/// 任务存储的 url 保持原始值(展示/日志用)。
+fn normalize_url_for_dedup(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +488,29 @@ mod tests {
     #[test]
     fn retention_days_is_seven() {
         assert_eq!(TaskQueue::RETENTION_DAYS, 7);
+    }
+
+    /// URL 去重规范化:尾斜杠/大小写视为相同链接(防重复解析穿透);
+    /// 查询参数不同视为不同资源;任务存储的 url 保持原始值。
+    #[test]
+    fn dedup_url_normalization() {
+        assert_eq!(
+            normalize_url_for_dedup("https://A.example/v1/"),
+            normalize_url_for_dedup("https://a.example/v1")
+        );
+        assert_eq!(
+            normalize_url_for_dedup("HTTPS://B.example/x"),
+            normalize_url_for_dedup("https://b.example/x")
+        );
+        // 查询参数差异保留(不同资源)
+        assert_ne!(
+            normalize_url_for_dedup("https://a.example/v?a=1"),
+            normalize_url_for_dedup("https://a.example/v?a=2")
+        );
+        // 路径中段斜杠不误删
+        assert_eq!(
+            normalize_url_for_dedup("https://a.example/p/a/b/"),
+            "https://a.example/p/a/b"
+        );
     }
 }

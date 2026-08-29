@@ -45,8 +45,10 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
             }
 
             // Traversal guard (Zip-Slip style): reject `..` / absolute escapes.
+            // 逐段拒绝 ".."(覆盖 "a/.." 末尾形式——原 contains("/../") 漏检;
+            // 亦不误伤 "..x" 这类以 .. 开头但非穿越段的文件名)。
             let normalized_rel = rel.replace('\\', "/");
-            if normalized_rel.starts_with("..") || normalized_rel.contains("/../") {
+            if normalized_rel.split('/').any(|c| c == "..") {
                 let r = http_response(Status::Forbidden, "text/plain", b"forbidden");
                 responder.respond(r);
                 return;

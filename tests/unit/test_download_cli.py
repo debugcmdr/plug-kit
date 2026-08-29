@@ -101,3 +101,18 @@ def test_import_file_unsupported_ext(tmp_path):
     data = run_and_capture(lambda: cli.import_file(str(f)))
     assert data["type"] == "error"
     assert data["code"] == "UNSUPPORTED_EXT"
+
+
+def test_video_format_selector():
+    # 纯数字 / 数字+p → 对应清晰度 selector
+    assert cli.video_format_selector("720") == "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+    assert cli.video_format_selector("2160p") == "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
+    # best / 空 / None → 回退 best
+    assert cli.video_format_selector("best") == "bestvideo+bestaudio/best"
+    assert cli.video_format_selector("") == "bestvideo+bestaudio/best"
+    assert cli.video_format_selector(None) == "bestvideo+bestaudio/best"
+    # note 型 label 不可靠解析 → 回退 best(回归:re.sub 会把 "格式 137" 误当 137p、
+    # "720p (AV1)" 误当 7201p)
+    assert cli.video_format_selector("格式 137") == "bestvideo+bestaudio/best"
+    assert cli.video_format_selector("720p (AV1)") == "bestvideo+bestaudio/best"
+    assert cli.video_format_selector("未知清晰度") == "bestvideo+bestaudio/best"

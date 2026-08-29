@@ -93,6 +93,9 @@ onMounted(async () => {
 //
 // 竞态修复:响应按"请求发出时"的来源插件投递(而非当前激活插件)。
 // 否则插件 A 发起长下载期间切到插件 B,响应会送错 iframe,Promise 悬空至超时。
+// key 用 `${pluginId}:${id}` 而非插件自报 id:不同插件可能生成相同随机 id
+// (无 crypto.randomUUID 环境的 Date.now 兜底同毫秒必撞),裸 id 作 key 会互相
+// 覆盖,前一个请求的响应被投递到后注册的插件 iframe(串台)。
 const pendingInvokes = new Map<string, { pluginId: string; ts: number }>()
 
 // 周期性清理超时(与 bridge.js 的 10 分钟 invoke 超时一致)未响应的条目,
@@ -112,9 +115,9 @@ onUnmounted(() => {
   if (invokeCleanupTimer) clearInterval(invokeCleanupTimer)
 })
 
-function relayResponse(reqId: string, resId: string, result: unknown, fallback: string) {
-  const rec = pendingInvokes.get(reqId)
-  pendingInvokes.delete(reqId)
+function relayResponse(key: string, resId: string, result: unknown, fallback: string) {
+  const rec = pendingInvokes.get(key)
+  pendingInvokes.delete(key)
   const pluginId = rec?.pluginId ?? fallback
   const iframe = document.querySelector(
     `iframe[data-plugin-id="${pluginId}"]`
@@ -140,13 +143,14 @@ window.addEventListener('message', (e) => {
   }
   if (!sourcePlugin) return
 
-  pendingInvokes.set(id, { pluginId: sourcePlugin, ts: Date.now() })
+  const key = `${sourcePlugin}:${id}`
+  pendingInvokes.set(key, { pluginId: sourcePlugin, ts: Date.now() })
   invoke('bridge_message', { pluginId: sourcePlugin, msg: { id, command, payload } })
     .then((res: any) => {
-      relayResponse(res.id ?? id, res.id ?? id, res.result, sourcePlugin!)
+      relayResponse(`${sourcePlugin}:${res.id ?? id}`, res.id ?? id, res.result, sourcePlugin!)
     })
     .catch((err: any) => {
-      relayResponse(id, id, { Err: String(err) }, sourcePlugin!)
+      relayResponse(key, id, { Err: String(err) }, sourcePlugin!)
     })
 })
 </script>

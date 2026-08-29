@@ -274,6 +274,20 @@ def _run_ytdlp(cmd, url, suffix="", out_dir=None):
     return True, files
 
 
+def video_format_selector(quality):
+    """按清晰度 label 构造 yt-dlp -f selector。
+
+    仅接受纯数字(720)或 数字+p(720p) 形式;note 型 label(如 "格式 137"、
+    "720p (AV1)")无法可靠解析 → 回退 best。修复:re.sub(r"\\D", "") 会把
+    "格式 137" 误当 137p、"720p (AV1)" 误当 7201p,导致错误 selector。"""
+    if quality and quality != "best":
+        m = re.match(r"^(\d{3,4})p?$", (quality or "").strip())
+        if m:
+            h = m.group(1)
+            return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+    return "bestvideo+bestaudio/best"
+
+
 def download(url, category, quality, output_dir, extra="", cookies="", playlist=""):
     """按分类下载。quality: best / 1080 / 720 / ... ;extra: 直播时长/字幕语言;cookies: 浏览器名或文件;playlist: 是否整列表。"""
     os.makedirs(output_dir, exist_ok=True)
@@ -334,18 +348,11 @@ def download(url, category, quality, output_dir, extra="", cookies="", playlist=
         # 输出文件名带清晰度标识 [height]p:同一视频多清晰度可同时下载互不覆盖
         # (曾用 %(title)s.%(ext)s,两个清晰度得到同名文件互相覆盖)。
         video_pattern = os.path.join(output_dir, "%(title)s [%(height)s]p.%(ext)s")
-        if quality and quality != "best":
-            h = re.sub(r"\D", "", quality)
-            if h and int(h) > 0:
-                # 有效高度 → 选对应清晰度
-                fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
-            else:
-                # 无法解析高度(如"未知清晰度"/纯字母)→ 回退 best,避免无效 selector
-                log_warn = "清晰度无法识别,使用最佳画质"
-                progress(5, message=log_warn)
-                fmt = "bestvideo+bestaudio/best"
-        else:
-            fmt = "bestvideo+bestaudio/best"
+        fmt = video_format_selector(quality)
+        if fmt == "bestvideo+bestaudio/best" and quality and quality != "best":
+            # 无法解析高度(如"未知清晰度"/"格式 137"/note 型 label)→ 回退 best,
+            # 避免无效 selector;明确告知用户
+            progress(5, message="清晰度无法识别,使用最佳画质")
         cmd = [YTDLP, "--newline", "-f", fmt, "--merge-output-format", "mp4", "-o", video_pattern]
         cmd += playlist_args(playlist) + base_cookies + [url]
         ok, files = _run_ytdlp(cmd, url, suffix=f" {quality or '最佳'}", out_dir=output_dir)

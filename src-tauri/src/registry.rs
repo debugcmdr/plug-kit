@@ -70,6 +70,12 @@ impl Registry {
                 }
             }
         }
+        // 主文件与全部备份均损坏:回退空表。引用关系丢失后,已装依赖无法按 refs
+        // 回收(卸载插件不再递减计数,磁盘缓存将滞留)——显式告警便于排查。
+        log::warn!(
+            "registry.json 及其全部备份损坏,已回退空 registry: {}",
+            path.display()
+        );
         Ok(Self::new())
     }
 

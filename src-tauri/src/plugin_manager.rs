@@ -350,10 +350,21 @@ impl PluginManager {
             // 归一化路径分隔符:zip 标准用正斜杠,但恶意/异常包可能混入反斜杠。
             // 统一转正斜杠后再做 Zip-Slip 检查,避免 Windows 上 PathBuf 把反斜杠
             // 当分隔符解析出歧义(与 protocol.rs 的路径归一化保持一致)。
-            let raw_name = file.name().replace('\\', "/");
-            let raw_name = raw_name.trim_end_matches('/');
-            let entry_rel = match &strip_with_slash {
-                Some(prefix) => raw_name.strip_prefix(prefix.as_str()).unwrap_or(raw_name),
+            let raw_name_full = file.name().replace('\\', "/");
+            let is_dir = raw_name_full.ends_with('/');
+            let raw_name = raw_name_full.trim_end_matches('/');
+            // strip 顶层前缀:目录条目自身(如 "convert/") strip 后为空 → 跳过;
+            // 子条目 "convert/manifest.json" → "manifest.json"。带尾斜杠前缀匹配
+            // 避免误伤 "convertex/x"(原 strip_with_slash 对目录条目自身不匹配,
+            // 残留空目录 dest/convert)。
+            let entry_rel: &str = match &strip_with_slash {
+                Some(prefix) => {
+                    if raw_name_full.starts_with(prefix.as_str()) {
+                        raw_name_full[prefix.len()..].trim_end_matches('/')
+                    } else {
+                        raw_name
+                    }
+                }
                 None => raw_name,
             };
             // Defensive: reject any residual traversal / absolute in the name.
@@ -367,9 +378,12 @@ impl PluginManager {
             crate::security::validate_unzip_path(dest, &outpath)
                 .map_err(|e| e.to_string())?;
 
-            if file.name().ends_with('/') {
-                fs::create_dir_all(&outpath)
-                    .map_err(|e| e.to_string())?;
+            if is_dir {
+                // 目录条目:strip 后为空的顶层目录本身无需创建(父目录由文件条目创建)
+                if !entry_rel.is_empty() {
+                    fs::create_dir_all(&outpath)
+                        .map_err(|e| e.to_string())?;
+                }
             } else {
                 if let Some(parent) = outpath.parent() {
                     fs::create_dir_all(parent)

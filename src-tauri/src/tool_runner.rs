@@ -242,7 +242,7 @@ impl ToolRunner {
             .map(|d| d.keys().cloned().collect::<Vec<_>>().join("、"))
             .unwrap_or_default();
         crate::task_queue::TaskQueue::update_progress(
-            &task_id, 0.0, None, None,
+            &task_id, Some(0.0), None, None,
             Some(if dep_names.is_empty() {
                 "正在准备运行环境…".to_string()
             } else {
@@ -316,13 +316,22 @@ impl ToolRunner {
         };
         let outcome = Self::await_with_cancel(&mut child, &cancel_flag, &pause_flag, is_progress, timeout).await;
         if let Some(flag) = outcome.killed {
-            // Cancelled / timed out：杀整个进程树(进程组 SIGTERM→SIGKILL)，
+            // Cancelled / timed out / wait error：杀整个进程树(进程组 SIGTERM→SIGKILL)，
             // 避免只杀主进程留下孤儿 ffmpeg(yt-dlp 拉起的)继续写盘。
             kill_process_tree(&mut child).await;
             let _ = stdout_task.await;
             let _ = stderr_task.await;
             crate::task_registry::unregister(&task_id).await;
-            crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Cancelled).await;
+            // 超时/异常 ≠ 用户取消:仅取消标记 Cancelled,其余(超时/等待错误)
+            // 按失败标记并带原因——此前统一标 Cancelled,超时任务在任务中心
+            // 显示「已取消」误导用户以为是手动取消。
+            if flag == "Task cancelled" {
+                crate::task_queue::TaskQueue::update_status(&task_id, crate::task_queue::TaskStatus::Cancelled).await;
+            } else {
+                crate::task_queue::TaskQueue::update_status_with_error(
+                    &task_id, crate::task_queue::TaskStatus::Failed, Some(flag.clone()),
+                ).await;
+            }
             let _ = std::fs::remove_dir_all(&work_dir);
             return Err(flag);
         }
@@ -349,13 +358,22 @@ impl ToolRunner {
         }
         crate::task_registry::unregister(&task_id).await;
 
-        if !outcome.success && !lines.iter().any(|l| l.contains("\"type\":\"error\"")) {
-            let msg = format!("Plugin exited with code {}", outcome.code);
-            crate::task_queue::TaskQueue::update_status_with_error(&task_id, crate::task_queue::TaskStatus::Failed, Some(msg.clone())).await;
-            log::error!("[{}] {}", task_id, msg);
-            crate::logger::Logger::task_error(&plugin_id, &task_id, "EXIT_FAILURE", &msg);
-            let _ = std::fs::remove_dir_all(&work_dir);
-            return Err(msg);
+        if !outcome.success {
+            // 退出码非 0:仅当最后一行是结构化 error 行时视为「插件已自行上报错误」,
+            // 否则按 EXIT_FAILURE 处理。解析判断替代字符串包含——progress 行
+            // message 里含 "type":"error" 字样会被原实现误判为已上报错误。
+            let last_is_error = lines.last().map_or(false, |l| {
+                serde_json::from_str::<PluginOutput>(l)
+                    .map_or(false, |o| matches!(o, PluginOutput::Error(_)))
+            });
+            if !last_is_error {
+                let msg = format!("Plugin exited with code {}", outcome.code);
+                crate::task_queue::TaskQueue::update_status_with_error(&task_id, crate::task_queue::TaskStatus::Failed, Some(msg.clone())).await;
+                log::error!("[{}] {}", task_id, msg);
+                crate::logger::Logger::task_error(&plugin_id, &task_id, "EXIT_FAILURE", &msg);
+                let _ = std::fs::remove_dir_all(&work_dir);
+                return Err(msg);
+            }
         }
 
         // Final line carries the result.
@@ -661,10 +679,11 @@ impl ToolRunner {
                                 // 同步任务中心:同一 task_id,任务中心可见真实进度。
                                 // percent clamp 到 0-100(插件为不可信代码,可能上报
                                 // 负数/超 100 的异常值,前端进度条按百分比渲染)。
+                                // None → 不更新 percent(保留已有值,防进度回跳)。
                                 let clamped = p.percent.map(|v| v.clamp(0.0, 100.0));
                                 crate::task_queue::TaskQueue::update_progress(
                                     &task_id,
-                                    clamped.unwrap_or(0.0),
+                                    clamped,
                                     p.speed.clone(),
                                     p.eta.clone(),
                                     p.message.clone(),

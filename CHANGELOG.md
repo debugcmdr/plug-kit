@@ -2,6 +2,26 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本语义化 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [未发布] - 2026-08-29 三阶段审查修复
+
+### 修复
+
+- **插件自管理 task_id 任务进入任务中心**:download/playlist 下载任务此前因前端传自生成 task_id 而绕过任务中心(不可见、无法取消),与 UI「可在任务中心查看进度」文案矛盾——`invoke_cli` 对未登记的 task_id 用该 id 建任务记录(`TaskQueue::create_with_id`,幂等),任务中心现可查看/取消下载任务
+- **任务中心进度回跳 0%**:插件 progress 行缺字段时整体覆盖 `TaskProgress`(playlist 切换集数时 percent=None→0.0)→ `update_progress` 改字段级更新(None 保留旧值)
+- **json 命令超时误标「已取消」**:超时/等待异常按 `Failed` 带原因标记,仅用户取消标 `Cancelled`
+
+### 健壮性与安全加固(审查建议 A~J)
+
+- **插件 error 行判定改解析判断**(tool_runner):字符串包含匹配可能被 progress 消息里的 `"type":"error"` 字样误判
+- **plugkit:// traversal guard 补漏**(protocol):逐段拒绝 `..`(覆盖 `a/..` 末尾形式,不再误伤 `..x` 文件名)
+- **invoke 响应路由防串台**(App.vue):pendingInvokes key 加插件前缀,消除跨插件同 id 碰撞时响应串台
+- **download 视频清晰度 selector 收紧**:仅接受纯数字/数字+p,note 型 label("格式 137"/"720p (AV1)")回退最佳画质(新增单测)
+- **convert 输出同文件防护**:`resolve_output` 增加 `os.path.samefile` 兜底(macOS 大小写不敏感/硬链接场景)
+- **依赖 registry 损坏显式告警**:主文件与备份全损坏时 log::warn(引用关系丢失可排查)
+- **zip 解压目录条目处理**:顶层目录 strip 后为空则跳过(消除残留空目录);目录判定用归一化名(反斜杠目录名不再误判)
+- **yt-dlp venv 版本校验**:venv 内版本与 pinned 不符自动重装(消除版本漂移);`PIP_MIRROR` 支持 `PLUGKIT_PIP_MIRROR` 覆盖
+- **URL 去重规范化**:`create_with_dedup` 去尾斜杠/大小写不敏感比较(查询参数保留;任务存储保留原值,新增单测)
+
 ## [未发布] - 2026-08-25 开发阶段
 
 ### 新增

@@ -200,29 +200,50 @@ YTDLP_VERSION = "2026.08.19"
 
 VENV_DIR = os.path.expanduser("~/.plugkit/venvs/ytdlp")
 VENV_PY = os.path.join(VENV_DIR, "bin", "python")
-PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# 国内默认清华源;境外/自建源可用环境变量 PLUGKIT_PIP_MIRROR 覆盖
+PIP_MIRROR = os.environ.get("PLUGKIT_PIP_MIRROR", "https://pypi.tuna.tsinghua.edu.cn/simple")
+
+
+def _venv_matches_pinned():
+    """校验 venv 内已装 yt-dlp 版本与 pinned 版本一致(pip show)。
+    版本不符(旧版本残留/被污染)→ 返回 False,由 _ensure_ytdlp_venv 重装。"""
+    try:
+        proc = _subprocess.run([VENV_PY, "-m", "pip", "show", "yt-dlp"],
+                               capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            return False
+        for line in proc.stdout.splitlines():
+            if line.lower().startswith("version:"):
+                return line.split(":", 1)[1].strip() == YTDLP_VERSION
+        return False
+    except Exception:
+        return False
 
 
 def _ensure_ytdlp_venv():
-    """确保 venv 可用:已存在 → True;缺失则创建 + 安装 pinned 版本(首次 ~30s,
-    创建期间向任务中心报进度,避免用户误判卡死)。失败静默返回 False,由调用方回退。"""
-    if os.path.exists(VENV_PY):
+    """确保 venv 可用且 yt-dlp 为 pinned 版本:已就绪 → True;
+    venv 缺失则创建 + 安装,版本不符则直接重装(首次 ~30s / 重装 ~10s,
+    期间向任务中心报进度,避免用户误判卡死)。失败静默返回 False,由调用方回退。"""
+    if os.path.exists(VENV_PY) and _venv_matches_pinned():
         return True
     try:
         progress(0, message="首次使用:正在准备解析环境(约 30 秒)…")
     except Exception:
         pass
     try:
-        _subprocess.run([_sys.executable, "-m", "venv", VENV_DIR],
-                        capture_output=True, timeout=120)
         if not os.path.exists(VENV_PY):
-            return False
+            _subprocess.run([_sys.executable, "-m", "venv", VENV_DIR],
+                            capture_output=True, timeout=120)
+            if not os.path.exists(VENV_PY):
+                return False
+        # 版本不符或全新安装:重装 pinned 版本(与 YTDLP_VERSION 对齐,
+        # 升级 yt-dlp 后旧 venv 版本不匹配会被自动重装,消除版本漂移)
         _subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-i", PIP_MIRROR,
                          f"yt-dlp=={YTDLP_VERSION}"],
                         capture_output=True, timeout=300)
     except Exception:
         return False
-    return os.path.exists(VENV_PY)
+    return os.path.exists(VENV_PY) and _venv_matches_pinned()
 
 
 def ytdlp_binary():
